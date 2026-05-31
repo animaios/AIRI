@@ -96,11 +96,11 @@
 
 ## Phase 7: UI Components — CardListItem & Helper Modals
 
-- [ ] **T7.1**: Update [`CardListItem.vue`](packages/stage-pages/src/pages/settings/airi-card/components/CardListItem.vue) to emit `@export-json` and `@export-png` events
-- [ ] **T7.2**: Add hover preview image to CardListItem
-- [ ] **T7.3**: Create [`ConceptBuilderModal.vue`](packages/stage-pages/src/pages/settings/airi-card/components/ConceptBuilderModal.vue) — concept building/editing modal
-- [ ] **T7.4**: Create [`FieldAiGeneratorModal.vue`](packages/stage-pages/src/pages/settings/airi-card/components/FieldAiGeneratorModal.vue) — AI-assisted field generation modal
-- [ ] **T7.5**: Add sparkle generator integration in CardCreationDialog: `openSparkleGenerator()`, `handleGeneratorSave()`, `generatorCardContext`, `generatorActingContext`
+- [x] **T7.1**: Update [`CardListItem.vue`](packages/stage-pages/src/pages/settings/airi-card/components/CardListItem.vue) to emit `@export-json` and `@export-png` events
+- [x] **T7.2**: Add hover preview image to CardListItem
+- [x] **T7.3**: Create [`ConceptBuilderModal.vue`](packages/stage-pages/src/pages/settings/airi-card/components/ConceptBuilderModal.vue) — concept building/editing modal
+- [x] **T7.4**: Create [`FieldAiGeneratorModal.vue`](packages/stage-pages/src/pages/settings/airi-card/components/FieldAiGeneratorModal.vue) — AI-assisted field generation modal
+- [x] **T7.5**: Add sparkle generator integration in CardCreationDialog: `openSparkleGenerator()`, `handleGeneratorSave()`, `generatorCardContext`, `generatorActingContext`
 
 ## Phase 8: Card Index Page Template Updates
 
