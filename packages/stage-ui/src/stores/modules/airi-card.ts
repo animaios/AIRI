@@ -1059,6 +1059,7 @@ export const useAiriCardStore = defineStore('airi-card', () => {
     seedDefaults,
     isModelSyncPrevented,
     syncCardState,
+    compactCard,
 
     updateActiveCardDisplayModel: (displayModelId: string | undefined) => {
       const cardId = activeCardId.value

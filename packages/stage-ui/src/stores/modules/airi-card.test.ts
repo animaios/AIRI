@@ -1,7 +1,9 @@
 import type { Card, ccv3 } from '@proj-airi/ccc'
 import type { AiriCard, AiriExtension } from './airi-card'
 
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { ref } from 'vue'
+import { setActivePinia, createPinia } from 'pinia'
 
 // Mock stores that import browser-only APIs (AudioWorkletNode, etc.)
 vi.mock('@proj-airi/stage-ui-three', () => ({
@@ -34,16 +36,16 @@ vi.mock('../settings/stage-model', () => ({
 
 vi.mock('./consciousness', () => ({
   useConsciousnessStore: vi.fn(() => ({
-    activeProvider: { value: '' },
-    activeModel: { value: '' },
+    activeProvider: ref(''),
+    activeModel: ref(''),
   })),
 }))
 
 vi.mock('./speech', () => ({
   useSpeechStore: vi.fn(() => ({
-    activeSpeechProvider: { value: '' },
-    activeSpeechVoiceId: { value: '' },
-    activeSpeechModel: { value: '' },
+    activeSpeechProvider: ref(''),
+    activeSpeechVoiceId: ref(''),
+    activeSpeechModel: ref(''),
   })),
 }))
 
@@ -53,11 +55,27 @@ vi.mock('vue-i18n', () => ({
   })),
 }))
 
+let nanoidCounter = 0
 vi.mock('nanoid', () => ({
-  nanoid: vi.fn(() => 'test-id'),
+  nanoid: vi.fn(() => {
+    nanoidCounter++
+    return `test-id-${nanoidCounter}`
+  }),
 }))
 
-import { buildSystemPrompt, mapEntriesSerializer, resolveAiriExtension, stripEmbeddedBackgroundData } from './airi-card'
+import {
+  buildSystemPrompt,
+  mapEntriesSerializer,
+  resolveAiriExtension,
+  stripEmbeddedBackgroundData,
+  useAiriCardStore,
+} from './airi-card'
+
+// Setup Pinia for store tests
+beforeEach(() => {
+  setActivePinia(createPinia())
+  nanoidCounter = 0
+})
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -98,7 +116,7 @@ function makeAiriCard(overrides: Partial<AiriCard> = {}): AiriCard {
         agents: {},
         heartbeats: {
           enabled: false,
-          intervalMinutes: 5,
+          intervalMinutes: 30,
           prompt: '',
           injectIntoPrompt: true,
           useAsLocalGate: true,
@@ -123,8 +141,10 @@ function makeAiriCard(overrides: Partial<AiriCard> = {}): AiriCard {
           dailyRunCount: 0,
         },
         shortTermMemory: {
-          windowSize: 3,
-          tokenBudgetPerDay: 1000,
+          enabled: false,
+          maxEntries: 50,
+          retentionMinutes: 1440,
+          importanceThreshold: 0.5,
         },
         artistry: {
           widgetInstruction: 'Spawn art with [ART: description]',
@@ -210,11 +230,11 @@ describe('resolveAiriExtension', () => {
     expect(ext.acting!.speechMannerismPrompt).toBe('')
     expect(ext.acting!.idleAnimations).toEqual([])
     expect(ext.heartbeats!.enabled).toBe(false)
-    expect(ext.heartbeats!.intervalMinutes).toBe(5)
+    expect(ext.heartbeats!.intervalMinutes).toBe(30)
     expect(ext.dreamState!.enabled).toBe(false)
     expect(ext.dreamState!.journalingThreshold).toBe('balanced')
-    expect(ext.shortTermMemory!.windowSize).toBe(3)
-    expect(ext.shortTermMemory!.tokenBudgetPerDay).toBe(1000)
+    expect(ext.shortTermMemory!.enabled).toBe(false)
+    expect(ext.shortTermMemory!.maxEntries).toBe(50)
     expect(ext.artistry!.spawnMode).toBe('bg_widget')
     expect(ext.artistry!.autonomousEnabled).toBe(false)
     expect(ext.artistry!.autonomousMonitorEnabled).toBe(true)
@@ -280,8 +300,10 @@ describe('resolveAiriExtension', () => {
             dailyRunCount: 3,
           },
           shortTermMemory: {
-            windowSize: 5,
-            tokenBudgetPerDay: 2000,
+            enabled: true,
+            maxEntries: 100,
+            retentionMinutes: 2880,
+            importanceThreshold: 0.75,
           },
           artistry: {
             provider: 'openai',
@@ -344,7 +366,8 @@ describe('resolveAiriExtension', () => {
     expect(ext.heartbeats!.intervalMinutes).toBe(10)
     expect(ext.dreamState!.enabled).toBe(true)
     expect(ext.dreamState!.journalingThreshold).toBe('lush')
-    expect(ext.shortTermMemory!.windowSize).toBe(5)
+    expect(ext.shortTermMemory!.enabled).toBe(true)
+    expect(ext.shortTermMemory!.maxEntries).toBe(100)
     expect(ext.artistry!.autonomousEnabled).toBe(true)
     expect(ext.artistry!.autonomousMonitorEnabled).toBe(false)
     expect(ext.generation!.enabled).toBe(true)
@@ -487,7 +510,7 @@ describe('stripEmbeddedBackgroundData', () => {
         dailyRunDate: undefined,
         dailyRunCount: 0,
       },
-      shortTermMemory: { windowSize: 3, tokenBudgetPerDay: 1000 },
+      shortTermMemory: { enabled: false, maxEntries: 50, retentionMinutes: 1440, importanceThreshold: 0.5 },
       artistry: {
         widgetInstruction: 'test',
         spawnMode: 'bg_widget',
@@ -575,7 +598,7 @@ describe('stripEmbeddedBackgroundData', () => {
         dailyRunDate: undefined,
         dailyRunCount: 0,
       },
-      shortTermMemory: { windowSize: 3, tokenBudgetPerDay: 1000 },
+      shortTermMemory: { enabled: false, maxEntries: 50, retentionMinutes: 1440, importanceThreshold: 0.5 },
       artistry: {
         widgetInstruction: 'test',
         spawnMode: 'bg_widget',
@@ -714,7 +737,7 @@ describe('buildSystemPrompt', () => {
             dailyRunDate: undefined,
             dailyRunCount: 0,
           },
-          shortTermMemory: { windowSize: 3, tokenBudgetPerDay: 1000 },
+          shortTermMemory: { enabled: false, maxEntries: 50, retentionMinutes: 1440, importanceThreshold: 0.5 },
           artistry: {
             widgetInstruction: 'Spawn art',
             spawnMode: 'bg_widget',
@@ -790,7 +813,7 @@ describe('buildSystemPrompt', () => {
             dailyRunDate: undefined,
             dailyRunCount: 0,
           },
-          shortTermMemory: { windowSize: 3, tokenBudgetPerDay: 1000 },
+          shortTermMemory: { enabled: false, maxEntries: 50, retentionMinutes: 1440, importanceThreshold: 0.5 },
           artistry: {
             provider: 'openai',
             widgetInstruction: 'Spawn with [ART: desc]',
@@ -865,7 +888,7 @@ describe('buildSystemPrompt', () => {
             dailyRunDate: undefined,
             dailyRunCount: 0,
           },
-          shortTermMemory: { windowSize: 3, tokenBudgetPerDay: 1000 },
+          shortTermMemory: { enabled: false, maxEntries: 50, retentionMinutes: 1440, importanceThreshold: 0.5 },
           artistry: {
             provider: 'openai',
             widgetInstruction: 'Spawn with [ART: desc]',
@@ -945,7 +968,7 @@ describe('buildSystemPrompt', () => {
             dailyRunDate: undefined,
             dailyRunCount: 0,
           },
-          shortTermMemory: { windowSize: 3, tokenBudgetPerDay: 1000 },
+          shortTermMemory: { enabled: false, maxEntries: 50, retentionMinutes: 1440, importanceThreshold: 0.5 },
           artistry: {
             provider: 'openai',
             widgetInstruction: 'ArtWidget',
@@ -1118,7 +1141,7 @@ describe('mapEntriesSerializer', () => {
             dailyRunDate: undefined,
             dailyRunCount: 0,
           },
-          shortTermMemory: { windowSize: 3, tokenBudgetPerDay: 1000 },
+          shortTermMemory: { enabled: false, maxEntries: 50, retentionMinutes: 1440, importanceThreshold: 0.5 },
           artistry: {
             widgetInstruction: 'test',
             spawnMode: 'bg_widget',
@@ -1156,5 +1179,769 @@ describe('mapEntriesSerializer', () => {
     expect(restoredCard?.extensions.airi.modules.displayModelId).toBe('model-1')
     expect(restoredCard?.extensions.airi.acting!.idleAnimations).toEqual(['idle1'])
     expect(restoredCard?.extensions.airi.heartbeats!.enabled).toBe(true)
+  })
+})
+
+// ===========================================================================
+// T11.3: compactCard()
+// ===========================================================================
+
+describe('compactCard', () => {
+  /**
+   * @example
+   * Strips large embedded data (preferredBackgroundDataUrl) from the card extension
+   */
+  it('strips preferredBackgroundDataUrl from the card extension', () => {
+    const store = useAiriCardStore()
+    const card = makeAiriCard({
+      extensions: {
+        airi: {
+          modules: {
+            consciousness: { provider: 'openai', model: 'gpt-4o' },
+            speech: { provider: 'elevenlabs', model: 'multilingual', voice_id: 'alloy' },
+            preferredBackgroundDataUrl: 'data:image/png;base64,abc123xyz',
+            preferredBackgroundName: 'My BG',
+          },
+          acting: {
+            modelExpressionPrompt: '',
+            speechExpressionPrompt: '',
+            speechMannerismPrompt: '',
+            idleAnimations: [],
+          },
+          agents: {},
+          heartbeats: {
+            enabled: false,
+            intervalMinutes: 5,
+            prompt: '',
+            injectIntoPrompt: true,
+            useAsLocalGate: true,
+            contextOptions: { windowHistory: true, systemLoad: true, usageMetrics: true },
+            schedule: { start: '09:00', end: '22:00' },
+            respectSchedule: true,
+          },
+          dreamState: {
+            enabled: false,
+            strictAfkGating: true,
+            journalingThreshold: 'balanced',
+            maxSessionsPerDay: 4,
+            sessionTimeoutMinutes: 60,
+            afkThresholdMinutes: 5,
+            minConversationTurns: 4,
+            lastProcessedAt: undefined,
+            dailyRunDate: undefined,
+            dailyRunCount: 0,
+          },
+          shortTermMemory: { enabled: false, maxEntries: 50, retentionMinutes: 1440, importanceThreshold: 0.5 },
+          artistry: {
+            widgetInstruction: 'test',
+            spawnMode: 'bg_widget',
+            autonomousEnabled: false,
+            autonomousThreshold: 70,
+            autonomousTarget: 'user',
+            autonomousMonitorEnabled: true,
+            autonomousHistoryDepth: 3,
+          },
+          generation: {
+            enabled: false,
+            provider: 'openai',
+            model: 'gpt-4o',
+            known: { contextWidth: undefined, reasoningFallback: true },
+            advanced: undefined,
+            compaction: { strategy: 'none', minKeepTurns: 15 },
+            importedPresetMeta: undefined,
+          },
+          groundingEnabled: false,
+          visual_assets: {},
+          active_concepts: [],
+          eternal_record: { relational_milestones: [], lore_bits: [] },
+          imageJournal: { selfie: false },
+          proactivity_metrics: { ttsCount: 0, sttCount: 0, chatCount: 0, totalTurns: 0 },
+        },
+      },
+    })
+
+    const compacted = store.compactCard(card)
+
+    expect(compacted.extensions.airi.modules.preferredBackgroundDataUrl).toBeUndefined()
+    expect(compacted.extensions.airi.modules.preferredBackgroundName).toBeUndefined()
+  })
+
+  /**
+   * @example
+   * Preserves all non-embedded fields (acting, heartbeats, dreamState, generation, etc.)
+   */
+  it('preserves all non-embedded fields', () => {
+    const store = useAiriCardStore()
+    const card = makeAiriCard({
+      extensions: {
+        airi: {
+          modules: {
+            consciousness: { provider: 'anthropic', model: 'claude-3' },
+            speech: { provider: 'openai', model: 'tts-1', voice_id: 'nova' },
+            displayModelId: 'model-1',
+            preferredBackgroundDataUrl: 'data:image/png;base64,xyz',
+          },
+          acting: {
+            modelExpressionPrompt: 'Use expressions',
+            speechExpressionPrompt: 'Use speech tags',
+            speechMannerismPrompt: 'Use mannerisms',
+            idleAnimations: ['idle1', 'idle2'],
+          },
+          agents: {},
+          heartbeats: {
+            enabled: true,
+            intervalMinutes: 10,
+            prompt: 'Check in',
+            injectIntoPrompt: false,
+            useAsLocalGate: false,
+            contextOptions: { windowHistory: false, systemLoad: false, usageMetrics: false },
+            schedule: { start: '08:00', end: '20:00' },
+            respectSchedule: false,
+          },
+          dreamState: {
+            enabled: true,
+            strictAfkGating: false,
+            journalingThreshold: 'lush',
+            maxSessionsPerDay: 8,
+            sessionTimeoutMinutes: 30,
+            afkThresholdMinutes: 10,
+            minConversationTurns: 2,
+            lastProcessedAt: 1000,
+            dailyRunDate: '2024-01-01',
+            dailyRunCount: 3,
+          },
+          shortTermMemory: { enabled: false, maxEntries: 50, retentionMinutes: 1440, importanceThreshold: 0.5 },
+          artistry: {
+            provider: 'openai',
+            model: 'dall-e-3',
+            widgetInstruction: 'Custom instruction',
+            spawnMode: 'widget',
+            autonomousEnabled: true,
+            autonomousThreshold: 80,
+            autonomousTarget: 'assistant',
+            autonomousMonitorEnabled: false,
+            autonomousHistoryDepth: 5,
+          },
+          generation: {
+            enabled: true,
+            provider: 'anthropic',
+            model: 'claude-3-opus',
+            known: { maxTokens: 4096, temperature: 0.7, topP: 0.9, contextWidth: 128000, reasoningFallback: false },
+            advanced: { custom: true },
+            compaction: { strategy: 'summarize', minKeepTurns: 20 },
+            importedPresetMeta: { source: 'sillytavern', originalKeys: ['key1'], importedAt: '2024-01-01' },
+          },
+          groundingEnabled: true,
+          visual_assets: {},
+          active_concepts: [],
+          eternal_record: { relational_milestones: [], lore_bits: [] },
+          imageJournal: { selfie: true },
+          proactivity_metrics: { ttsCount: 10, sttCount: 20, chatCount: 30, totalTurns: 40 },
+        },
+      },
+    })
+
+    const compacted = store.compactCard(card)
+
+    // Acting preserved
+    expect(compacted.extensions.airi.acting!.modelExpressionPrompt).toBe('Use expressions')
+    expect(compacted.extensions.airi.acting!.speechExpressionPrompt).toBe('Use speech tags')
+    expect(compacted.extensions.airi.acting!.speechMannerismPrompt).toBe('Use mannerisms')
+    expect(compacted.extensions.airi.acting!.idleAnimations).toEqual(['idle1', 'idle2'])
+
+    // Heartbeats preserved
+    expect(compacted.extensions.airi.heartbeats!.enabled).toBe(true)
+    expect(compacted.extensions.airi.heartbeats!.intervalMinutes).toBe(10)
+    expect(compacted.extensions.airi.heartbeats!.prompt).toBe('Check in')
+    expect(compacted.extensions.airi.heartbeats!.injectIntoPrompt).toBe(false)
+
+    // Dream state preserved
+    expect(compacted.extensions.airi.dreamState!.enabled).toBe(true)
+    expect(compacted.extensions.airi.dreamState!.journalingThreshold).toBe('lush')
+    expect(compacted.extensions.airi.dreamState!.maxSessionsPerDay).toBe(8)
+
+    // Generation preserved
+    expect(compacted.extensions.airi.generation!.enabled).toBe(true)
+    expect(compacted.extensions.airi.generation!.provider).toBe('anthropic')
+    expect(compacted.extensions.airi.generation!.model).toBe('claude-3-opus')
+    expect(compacted.extensions.airi.generation!.known!.maxTokens).toBe(4096)
+    expect(compacted.extensions.airi.generation!.compaction!.strategy).toBe('summarize')
+
+    // Artistry preserved
+    expect(compacted.extensions.airi.artistry!.autonomousEnabled).toBe(true)
+    expect(compacted.extensions.airi.artistry!.autonomousMonitorEnabled).toBe(false)
+    expect(compacted.extensions.airi.artistry!.autonomousHistoryDepth).toBe(5)
+
+    // Grounding preserved
+    expect(compacted.extensions.airi.groundingEnabled).toBe(true)
+
+    // Modules preserved
+    expect(compacted.extensions.airi.modules.consciousness.provider).toBe('anthropic')
+    expect(compacted.extensions.airi.modules.consciousness.model).toBe('claude-3')
+    expect(compacted.extensions.airi.modules.speech.voice_id).toBe('nova')
+    expect(compacted.extensions.airi.modules.displayModelId).toBe('model-1')
+
+    // Embedded data stripped
+    expect(compacted.extensions.airi.modules.preferredBackgroundDataUrl).toBeUndefined()
+    expect(compacted.extensions.airi.modules.preferredBackgroundName).toBeUndefined()
+  })
+
+  /**
+   * @example
+   * Handles cards with minimal/no extension data gracefully
+   */
+  it('handles cards with minimal extension data gracefully', () => {
+    const store = useAiriCardStore()
+    const card = makeCard({
+      extensions: {
+        airi: {
+          modules: {
+            consciousness: { provider: '', model: '' },
+            speech: { provider: '', model: '', voice_id: '' },
+          },
+        },
+      } as any,
+    })
+
+    const compacted = store.compactCard(card)
+
+    expect(compacted).toBeDefined()
+    expect(compacted.name).toBe('Test Card')
+    expect(compacted.extensions.airi).toBeDefined()
+    expect(compacted.extensions.airi.groundingEnabled).toBe(false)
+    expect(compacted.extensions.airi.acting).toBeDefined()
+    expect(compacted.extensions.airi.heartbeats).toBeDefined()
+    expect(compacted.extensions.airi.dreamState).toBeDefined()
+    expect(compacted.extensions.airi.generation).toBeDefined()
+  })
+
+  /**
+   * @example
+   * Does not mutate the original card (returns a new object)
+   */
+  it('does not mutate the original card', () => {
+    const store = useAiriCardStore()
+    const card = makeAiriCard({
+      extensions: {
+        airi: {
+          modules: {
+            consciousness: { provider: 'openai', model: 'gpt-4o' },
+            speech: { provider: 'elevenlabs', model: 'multilingual', voice_id: 'alloy' },
+            preferredBackgroundDataUrl: 'data:image/png;base64,abc123',
+            preferredBackgroundName: 'My BG',
+          },
+          acting: {
+            modelExpressionPrompt: '',
+            speechExpressionPrompt: '',
+            speechMannerismPrompt: '',
+            idleAnimations: [],
+          },
+          agents: {},
+          heartbeats: {
+            enabled: false,
+            intervalMinutes: 5,
+            prompt: '',
+            injectIntoPrompt: true,
+            useAsLocalGate: true,
+            contextOptions: { windowHistory: true, systemLoad: true, usageMetrics: true },
+            schedule: { start: '09:00', end: '22:00' },
+            respectSchedule: true,
+          },
+          dreamState: {
+            enabled: false,
+            strictAfkGating: true,
+            journalingThreshold: 'balanced',
+            maxSessionsPerDay: 4,
+            sessionTimeoutMinutes: 60,
+            afkThresholdMinutes: 5,
+            minConversationTurns: 4,
+            lastProcessedAt: undefined,
+            dailyRunDate: undefined,
+            dailyRunCount: 0,
+          },
+          shortTermMemory: { enabled: false, maxEntries: 50, retentionMinutes: 1440, importanceThreshold: 0.5 },
+          artistry: {
+            widgetInstruction: 'test',
+            spawnMode: 'bg_widget',
+            autonomousEnabled: false,
+            autonomousThreshold: 70,
+            autonomousTarget: 'user',
+            autonomousMonitorEnabled: true,
+            autonomousHistoryDepth: 3,
+          },
+          generation: {
+            enabled: false,
+            provider: 'openai',
+            model: 'gpt-4o',
+            known: { contextWidth: undefined, reasoningFallback: true },
+            advanced: undefined,
+            compaction: { strategy: 'none', minKeepTurns: 15 },
+            importedPresetMeta: undefined,
+          },
+          groundingEnabled: false,
+          visual_assets: {},
+          active_concepts: [],
+          eternal_record: { relational_milestones: [], lore_bits: [] },
+          imageJournal: { selfie: false },
+          proactivity_metrics: { ttsCount: 0, sttCount: 0, chatCount: 0, totalTurns: 0 },
+        },
+      },
+    })
+
+    // Store original values before compacting
+    const originalDataUrl = card.extensions.airi.modules.preferredBackgroundDataUrl
+    const originalName = card.extensions.airi.modules.preferredBackgroundName
+
+    const compacted = store.compactCard(card)
+
+    // Original card should not be mutated
+    expect(card.extensions.airi.modules.preferredBackgroundDataUrl).toBe(originalDataUrl)
+    expect(card.extensions.airi.modules.preferredBackgroundName).toBe(originalName)
+
+    // Compacted card should be a different object
+    expect(compacted).not.toBe(card)
+    expect(compacted.extensions.airi).not.toBe(card.extensions.airi)
+  })
+})
+
+// ===========================================================================
+// T11.4: Store Operations
+// ===========================================================================
+
+describe('store operations', () => {
+  /**
+   * @example
+   * addCard adds a card to the store
+   */
+  describe('addCard', () => {
+    it('adds a card to the store', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({ name: 'New Card' })
+
+      const id = await store.addCard(card)
+
+      expect(id).toBeDefined()
+      expect(store.cards.has(id)).toBe(true)
+      expect(store.cards.get(id)?.name).toBe('New Card')
+    })
+
+    it('throws for cards with empty name', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({ name: '' })
+
+      await expect(store.addCard(card)).rejects.toThrow('Card name is required')
+    })
+
+    it('throws for cards with whitespace-only name', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({ name: '   ' })
+
+      await expect(store.addCard(card)).rejects.toThrow('Card name is required')
+    })
+  })
+
+  /**
+   * @example
+   * removeCard removes a card from the store
+   */
+  describe('removeCard', () => {
+    it('removes a card from the store', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({ name: 'To Remove' })
+      const id = await store.addCard(card)
+
+      expect(store.cards.has(id)).toBe(true)
+
+      store.removeCard(id)
+
+      expect(store.cards.has(id)).toBe(false)
+    })
+
+    it('removing the active card does not crash', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({ name: 'Active Card' })
+      const id = await store.addCard(card)
+
+      store.activeCardId = id
+      expect(store.activeCardId).toBe(id)
+
+      store.removeCard(id)
+
+      expect(store.cards.has(id)).toBe(false)
+      // activeCardId still points to the removed card (no crash)
+      expect(store.activeCardId).toBe(id)
+    })
+  })
+
+  /**
+   * @example
+   * updateCard updates card fields using immutable Map pattern
+   */
+  describe('updateCard', () => {
+    it('updates card fields', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({ name: 'Original Name' })
+      const id = await store.addCard(card)
+
+      const result = store.updateCard(id, { name: 'Updated Name' })
+
+      expect(result).toBe(true)
+      expect(store.cards.get(id)?.name).toBe('Updated Name')
+    })
+
+    it('returns false for non-existent card', () => {
+      const store = useAiriCardStore()
+
+      const result = store.updateCard('non-existent-id', { name: 'New Name' })
+
+      expect(result).toBe(false)
+    })
+
+    it('uses immutable Map pattern (new Map reference)', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({ name: 'Immutable Test' })
+      const id = await store.addCard(card)
+
+      const previousMap = store.cards
+      store.updateCard(id, { name: 'Changed' })
+
+      // The Map reference should have changed (immutable pattern)
+      expect(store.cards).not.toBe(previousMap)
+      expect(store.cards.get(id)?.name).toBe('Changed')
+    })
+  })
+
+  /**
+   * @example
+   * activateCard sets activeCardId
+   */
+  describe('activateCard', () => {
+    it('sets the active card id', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({ name: 'Activatable' })
+      const id = await store.addCard(card)
+
+      await store.activateCard(id)
+
+      expect(store.activeCardId).toBe(id)
+    })
+
+    it('activates a card and retrieves it via activeCard', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({ name: 'Active Test' })
+      const id = await store.addCard(card)
+
+      await store.activateCard(id)
+
+      expect(store.activeCard).toBeDefined()
+      expect(store.activeCard?.name).toBe('Active Test')
+    })
+  })
+
+  /**
+   * @example
+   * duplicateCard creates a new card with new id and " (copy)" suffix
+   */
+  describe('duplicateCard', () => {
+    it('creates a new card with " (copy)" suffix', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({ name: 'Original' })
+      const id = await store.addCard(card)
+
+      const duplicatedId = await store.duplicateCard(id)
+
+      expect(duplicatedId).toBeDefined()
+      expect(duplicatedId).not.toBe(id)
+      expect(store.cards.has(duplicatedId!)).toBe(true)
+      expect(store.cards.get(duplicatedId!)?.name).toBe('Original (copy)')
+    })
+
+    it('returns null for non-existent card', async () => {
+      const store = useAiriCardStore()
+
+      const result = await store.duplicateCard('non-existent-id')
+
+      expect(result).toBeNull()
+    })
+
+    it('preserves card data in the duplicate', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({
+        name: 'Source',
+        description: 'Source description',
+        personality: 'Friendly',
+      })
+      const id = await store.addCard(card)
+
+      const duplicatedId = await store.duplicateCard(id)
+      const duplicated = store.cards.get(duplicatedId!)
+
+      expect(duplicated?.description).toBe('Source description')
+      expect(duplicated?.personality).toBe('Friendly')
+    })
+  })
+
+  /**
+   * @example
+   * toggleGrounding toggles the grounding flag on/off
+   */
+  describe('toggleGrounding', () => {
+    it('toggles grounding from false to true', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({
+        name: 'Grounding Test',
+        extensions: {
+          airi: {
+            modules: {
+              consciousness: { provider: 'openai', model: 'gpt-4o' },
+              speech: { provider: 'elevenlabs', model: 'multilingual', voice_id: 'alloy' },
+            },
+            acting: {
+              modelExpressionPrompt: '',
+              speechExpressionPrompt: '',
+              speechMannerismPrompt: '',
+              idleAnimations: [],
+            },
+            agents: {},
+            heartbeats: {
+              enabled: false,
+              intervalMinutes: 5,
+              prompt: '',
+              injectIntoPrompt: true,
+              useAsLocalGate: true,
+              contextOptions: { windowHistory: true, systemLoad: true, usageMetrics: true },
+              schedule: { start: '09:00', end: '22:00' },
+              respectSchedule: true,
+            },
+            dreamState: {
+              enabled: false,
+              strictAfkGating: true,
+              journalingThreshold: 'balanced',
+              maxSessionsPerDay: 4,
+              sessionTimeoutMinutes: 60,
+              afkThresholdMinutes: 5,
+              minConversationTurns: 4,
+              lastProcessedAt: undefined,
+              dailyRunDate: undefined,
+              dailyRunCount: 0,
+            },
+            shortTermMemory: { enabled: false, maxEntries: 50, retentionMinutes: 1440, importanceThreshold: 0.5 },
+            artistry: {
+              widgetInstruction: 'test',
+              spawnMode: 'bg_widget',
+              autonomousEnabled: false,
+              autonomousThreshold: 70,
+              autonomousTarget: 'user',
+              autonomousMonitorEnabled: true,
+              autonomousHistoryDepth: 3,
+            },
+            generation: {
+              enabled: false,
+              provider: 'openai',
+              model: 'gpt-4o',
+              known: { contextWidth: undefined, reasoningFallback: true },
+              advanced: undefined,
+              compaction: { strategy: 'none', minKeepTurns: 15 },
+              importedPresetMeta: undefined,
+            },
+            groundingEnabled: false,
+            visual_assets: {},
+            active_concepts: [],
+            eternal_record: { relational_milestones: [], lore_bits: [] },
+            imageJournal: { selfie: false },
+            proactivity_metrics: { ttsCount: 0, sttCount: 0, chatCount: 0, totalTurns: 0 },
+          },
+        },
+      })
+      const id = await store.addCard(card)
+
+      expect(store.cards.get(id)?.extensions.airi.groundingEnabled).toBe(false)
+
+      store.toggleGrounding(id)
+
+      expect(store.cards.get(id)?.extensions.airi.groundingEnabled).toBe(true)
+    })
+
+    it('toggles grounding from true to false', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({
+        name: 'Grounding Test 2',
+        extensions: {
+          airi: {
+            modules: {
+              consciousness: { provider: 'openai', model: 'gpt-4o' },
+              speech: { provider: 'elevenlabs', model: 'multilingual', voice_id: 'alloy' },
+            },
+            acting: {
+              modelExpressionPrompt: '',
+              speechExpressionPrompt: '',
+              speechMannerismPrompt: '',
+              idleAnimations: [],
+            },
+            agents: {},
+            heartbeats: {
+              enabled: false,
+              intervalMinutes: 5,
+              prompt: '',
+              injectIntoPrompt: true,
+              useAsLocalGate: true,
+              contextOptions: { windowHistory: true, systemLoad: true, usageMetrics: true },
+              schedule: { start: '09:00', end: '22:00' },
+              respectSchedule: true,
+            },
+            dreamState: {
+              enabled: false,
+              strictAfkGating: true,
+              journalingThreshold: 'balanced',
+              maxSessionsPerDay: 4,
+              sessionTimeoutMinutes: 60,
+              afkThresholdMinutes: 5,
+              minConversationTurns: 4,
+              lastProcessedAt: undefined,
+              dailyRunDate: undefined,
+              dailyRunCount: 0,
+            },
+            shortTermMemory: { enabled: false, maxEntries: 50, retentionMinutes: 1440, importanceThreshold: 0.5 },
+            artistry: {
+              widgetInstruction: 'test',
+              spawnMode: 'bg_widget',
+              autonomousEnabled: false,
+              autonomousThreshold: 70,
+              autonomousTarget: 'user',
+              autonomousMonitorEnabled: true,
+              autonomousHistoryDepth: 3,
+            },
+            generation: {
+              enabled: false,
+              provider: 'openai',
+              model: 'gpt-4o',
+              known: { contextWidth: undefined, reasoningFallback: true },
+              advanced: undefined,
+              compaction: { strategy: 'none', minKeepTurns: 15 },
+              importedPresetMeta: undefined,
+            },
+            groundingEnabled: true,
+            visual_assets: {},
+            active_concepts: [],
+            eternal_record: { relational_milestones: [], lore_bits: [] },
+            imageJournal: { selfie: false },
+            proactivity_metrics: { ttsCount: 0, sttCount: 0, chatCount: 0, totalTurns: 0 },
+          },
+        },
+      })
+      const id = await store.addCard(card)
+
+      expect(store.cards.get(id)?.extensions.airi.groundingEnabled).toBe(true)
+
+      store.toggleGrounding(id)
+
+      expect(store.cards.get(id)?.extensions.airi.groundingEnabled).toBe(false)
+    })
+
+    it('does nothing for non-existent card', () => {
+      const store = useAiriCardStore()
+
+      // Should not throw
+      expect(() => store.toggleGrounding('non-existent')).not.toThrow()
+    })
+  })
+
+  /**
+   * @example
+   * setAutonomousArtistry sets the autonomous artistry flag
+   */
+  describe('setAutonomousArtistry', () => {
+    it('sets autonomous artistry to true', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({ name: 'Autonomous Test' })
+      const id = await store.addCard(card)
+
+      store.setAutonomousArtistry(id, true)
+
+      expect(store.cards.get(id)?.extensions.airi.artistry!.autonomousEnabled).toBe(true)
+    })
+
+    it('sets autonomous artistry to false', async () => {
+      const store = useAiriCardStore()
+      const card = makeAiriCard({
+        name: 'Autonomous Test 2',
+        extensions: {
+          airi: {
+            modules: {
+              consciousness: { provider: 'openai', model: 'gpt-4o' },
+              speech: { provider: 'elevenlabs', model: 'multilingual', voice_id: 'alloy' },
+            },
+            acting: {
+              modelExpressionPrompt: '',
+              speechExpressionPrompt: '',
+              speechMannerismPrompt: '',
+              idleAnimations: [],
+            },
+            agents: {},
+            heartbeats: {
+              enabled: false,
+              intervalMinutes: 5,
+              prompt: '',
+              injectIntoPrompt: true,
+              useAsLocalGate: true,
+              contextOptions: { windowHistory: true, systemLoad: true, usageMetrics: true },
+              schedule: { start: '09:00', end: '22:00' },
+              respectSchedule: true,
+            },
+            dreamState: {
+              enabled: false,
+              strictAfkGating: true,
+              journalingThreshold: 'balanced',
+              maxSessionsPerDay: 4,
+              sessionTimeoutMinutes: 60,
+              afkThresholdMinutes: 5,
+              minConversationTurns: 4,
+              lastProcessedAt: undefined,
+              dailyRunDate: undefined,
+              dailyRunCount: 0,
+            },
+            shortTermMemory: { enabled: false, maxEntries: 50, retentionMinutes: 1440, importanceThreshold: 0.5 },
+            artistry: {
+              widgetInstruction: 'test',
+              spawnMode: 'bg_widget',
+              autonomousEnabled: true,
+              autonomousThreshold: 70,
+              autonomousTarget: 'user',
+              autonomousMonitorEnabled: true,
+              autonomousHistoryDepth: 3,
+            },
+            generation: {
+              enabled: false,
+              provider: 'openai',
+              model: 'gpt-4o',
+              known: { contextWidth: undefined, reasoningFallback: true },
+              advanced: undefined,
+              compaction: { strategy: 'none', minKeepTurns: 15 },
+              importedPresetMeta: undefined,
+            },
+            groundingEnabled: false,
+            visual_assets: {},
+            active_concepts: [],
+            eternal_record: { relational_milestones: [], lore_bits: [] },
+            imageJournal: { selfie: false },
+            proactivity_metrics: { ttsCount: 0, sttCount: 0, chatCount: 0, totalTurns: 0 },
+          },
+        },
+      })
+      const id = await store.addCard(card)
+
+      expect(store.cards.get(id)?.extensions.airi.artistry!.autonomousEnabled).toBe(true)
+
+      store.setAutonomousArtistry(id, false)
+
+      expect(store.cards.get(id)?.extensions.airi.artistry!.autonomousEnabled).toBe(false)
+    })
+
+    it('does nothing for non-existent card', () => {
+      const store = useAiriCardStore()
+
+      // Should not throw
+      expect(() => store.setAutonomousArtistry('non-existent', true)).not.toThrow()
+    })
   })
 })
