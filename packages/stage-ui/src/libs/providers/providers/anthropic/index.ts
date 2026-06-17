@@ -15,13 +15,16 @@ const anthropicConfigSchema = z.object({
 type AnthropicConfig = z.input<typeof anthropicConfigSchema>
 
 function createAnthropic(apiKey: string, baseURL: string = 'https://api.anthropic.com/v1/') {
-  const anthropicFetch = async (input: any, init: any) => {
-    init.headers ??= {}
-    if (Array.isArray(init.headers)) init.headers.push(['anthropic-dangerous-direct-browser-access', 'true'])
-    else if (init.headers instanceof Headers) init.headers.append('anthropic-dangerous-direct-browser-access', 'true')
-    else init.headers['anthropic-dangerous-direct-browser-access'] = 'true'
+  const anthropicFetch = async (input: RequestInfo | URL, init?: RequestInit) => {
+    const resolvedInit = init ?? {}
+    resolvedInit.headers ??= {}
+    if (Array.isArray(resolvedInit.headers))
+      resolvedInit.headers.push(['anthropic-dangerous-direct-browser-access', 'true'])
+    else if (resolvedInit.headers instanceof Headers)
+      resolvedInit.headers.append('anthropic-dangerous-direct-browser-access', 'true')
+    else resolvedInit.headers['anthropic-dangerous-direct-browser-access'] = 'true'
 
-    return fetch(input, init)
+    return fetch(input, resolvedInit)
   }
 
   return merge(

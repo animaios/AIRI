@@ -226,7 +226,7 @@ export const useHearingStore = defineStore('hearing-store', () => {
 
   async function transcription(
     providerId: string,
-    provider: TranscriptionProviderWithExtraOptions<string, any>,
+    provider: TranscriptionProviderWithExtraOptions<string, Record<string, unknown>>,
     model: string,
     input: HearingTranscriptionInput,
     format?: 'json' | 'verbose_json',
@@ -473,10 +473,10 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
         }
 
         // Stop Web Speech API recognition if it exists
-        const result = session.result as any
-        if (result?.recognition) {
+        const result = session.result
+        if (result?.recognition && typeof result.recognition === 'object' && 'stop' in result.recognition) {
           try {
-            result.recognition.stop()
+            ;(result.recognition as { stop: () => void }).stop()
           } catch (err) {
             console.warn('Error stopping Web Speech API recognition:', err)
           }
@@ -747,7 +747,9 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
       }
 
       const provider =
-        await providersStore.getProviderInstance<TranscriptionProviderWithExtraOptions<string, any>>(providerId)
+        await providersStore.getProviderInstance<
+          TranscriptionProviderWithExtraOptions<string, Record<string, unknown>>
+        >(providerId)
       if (!provider) {
         throw new Error('Failed to initialize speech provider')
       }
@@ -882,7 +884,9 @@ export const useHearingSpeechInputPipeline = defineStore('modules:hearing:speech
       if (recording && recording.size > 0) {
         const providerId = activeTranscriptionProvider.value
         const provider =
-          await providersStore.getProviderInstance<TranscriptionProviderWithExtraOptions<string, any>>(providerId)
+          await providersStore.getProviderInstance<
+            TranscriptionProviderWithExtraOptions<string, Record<string, unknown>>
+          >(providerId)
         if (!provider) {
           throw new Error('Failed to initialize speech provider')
         }

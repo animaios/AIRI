@@ -87,7 +87,17 @@ function resolveConfiguredDeployments(config: AzureOpenAIConfig): string[] {
   return endpointHints.completionsDeployment ? [endpointHints.completionsDeployment] : []
 }
 
-function mapChatBodyToCompletions(body: any): Record<string, unknown> {
+interface ChatCompletionsRequestBody {
+  messages?: unknown[]
+  max_completion_tokens?: number
+  max_output_tokens?: number
+  max_tokens?: number
+  input?: unknown
+  model?: string
+  [key: string]: unknown
+}
+
+function mapChatBodyToCompletions(body: ChatCompletionsRequestBody | null): Record<string, unknown> {
   const mappedBody: Record<string, unknown> = {
     ...body,
     messages: body?.messages,
@@ -195,33 +205,33 @@ export const providerAzureOpenAI = defineProvider<AzureOpenAIConfig>({
     }),
   createProvider(config) {
     const normalizedBaseUrl = resolveProviderBaseUrl(config.baseUrl || DEFAULT_AZURE_BASE_URL)
-    const provider = createOpenAI(config.apiKey || '', normalizedBaseUrl) as any
+    const provider = createOpenAI(config.apiKey || '', normalizedBaseUrl)
     const fetch = createAzureOpenAIFetch(config)
 
     return {
       ...provider,
-      model: (...args: any[]) => ({
-        ...provider.model(...args),
+      model: () => ({
+        ...provider.model(),
         fetch,
       }),
-      chat: (...args: any[]) => ({
-        ...provider.chat(...args),
+      chat: (model: string) => ({
+        ...provider.chat(model),
         fetch,
       }),
-      embed: (...args: any[]) => ({
-        ...provider.embed(...args),
+      embed: (model: string) => ({
+        ...provider.embed(model),
         fetch,
       }),
-      image: (...args: any[]) => ({
-        ...provider.image(...args),
+      image: (model: string) => ({
+        ...provider.image(model),
         fetch,
       }),
-      speech: (...args: any[]) => ({
-        ...provider.speech(...args),
+      speech: (model: string) => ({
+        ...provider.speech(model),
         fetch,
       }),
-      transcription: (...args: any[]) => ({
-        ...provider.transcription(...args),
+      transcription: (model: string) => ({
+        ...provider.transcription(model),
         fetch,
       }),
     }
