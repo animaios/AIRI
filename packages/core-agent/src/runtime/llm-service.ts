@@ -195,9 +195,12 @@ export async function streamFrom({ model, chatProvider, messages, options, built
         const streamEvent = resolveCapturedToolErrorEvent(event, capturedToolErrorByCallId)
         await options?.onStreamEvent?.(streamEvent)
         if (event && typeof event === 'object' && 'type' in event) {
-          const eventObj = event as { type: string; reason?: string; error?: unknown }
+          const eventObj = event as { type: string; reason?: string; finishReason?: string; error?: unknown }
           if (eventObj.type === 'finish') {
-            const finishReason = eventObj.reason
+            // NOTICE: Fall back to `finishReason` for providers that still emit the
+            // legacy field name instead of `reason`. Without this, tool-call rounds
+            // are never detected and the stream resolves prematurely or hangs.
+            const finishReason = eventObj.reason ?? eventObj.finishReason
             const waitingForToolRound = finishReason === 'tool_calls' || finishReason === 'tool-calls'
             if (!waitingForToolRound || !options?.waitForTools) resolveOnce()
           } else if (eventObj.type === 'error') {

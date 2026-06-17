@@ -98,8 +98,9 @@ interface ChatCompletionsRequestBody {
 }
 
 function mapChatBodyToCompletions(body: ChatCompletionsRequestBody | null): Record<string, unknown> {
+  const safeBody = body ?? {}
   const mappedBody: Record<string, unknown> = {
-    ...body,
+    ...safeBody,
     messages: body?.messages,
     max_completion_tokens: body?.max_completion_tokens ?? body?.max_output_tokens ?? body?.max_tokens,
   }

@@ -81,36 +81,26 @@ const { providers } = storeToRefs(providersStore)
 const providerMetadata = computed(() => providersStore.getProviderMetadata(props.providerId))
 
 // Common provider settings
-const apiKey = computed({
-  get: () => {
-    const providerConfig = providers.value[props.providerId] as ProviderConfig | undefined
-    return providerConfig?.apiKey ?? ''
-  },
-  set: (value: string) => {
-    if (!providers.value[props.providerId]) {
-      providers.value[props.providerId] = {}
+const apiKey = ref('')
+const baseUrl = ref('')
+
+// Sync from store to local refs (prevents feedback loop via value comparison)
+watch(
+  () => providers.value[props.providerId] as ProviderConfig | undefined,
+  (config) => {
+    if (config) {
+      if (config.apiKey !== undefined && config.apiKey !== apiKey.value) {
+        apiKey.value = config.apiKey ?? ''
+      }
+      const defaultBaseUrl = extractStringValue(providerMetadata.value?.defaultOptions?.().baseUrl)
+      const targetBaseUrl = config.baseUrl ?? defaultBaseUrl
+      if (targetBaseUrl !== baseUrl.value) {
+        baseUrl.value = targetBaseUrl
+      }
     }
-
-    const providerConfig = providers.value[props.providerId] as ProviderConfig
-    providerConfig.apiKey = value
   },
-})
-
-const baseUrl = computed({
-  get: () => {
-    const providerConfig = providers.value[props.providerId] as ProviderConfig | undefined
-    const defaultBaseUrl = extractStringValue(providerMetadata.value?.defaultOptions?.().baseUrl)
-    return providerConfig?.baseUrl ?? defaultBaseUrl
-  },
-  set: (value: string) => {
-    if (!providers.value[props.providerId]) {
-      providers.value[props.providerId] = {}
-    }
-
-    const providerConfig = providers.value[props.providerId] as ProviderConfig
-    providerConfig.baseUrl = value
-  },
-})
+  { immediate: true, deep: true },
+)
 
 // Voice settings as reactive objects to allow for different provider settings
 const voiceSettings = ref<VoiceSettings>({})
