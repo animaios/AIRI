@@ -9,270 +9,318 @@ The integration must preserve the Code module's independence (it remains a stand
 ## Glossary
 
 - **AIRI**: The AI companion personality that hosts the stage-tamagotchi Electron application
-- **Code_Module**: The standalone browser-based AI coding assistant (AnimAIOS Code fork of Roo Code)
-- **Hacking_Mode**: The integration state where Code_Module runs embedded inside AIRI's interface
-- **Normal_Mode**: The default state where users interact directly with AIRI without Code_Module visible
-- **BrowserView**: Electron's component for embedding web content within application windows
-- **Code_Backend**: The Fastify server (port 3210) that serves Code_Module's React SPA and handles WebSocket streaming
-- **Code_Process**: The child process running Code_Backend
+- **Code_Module**: The standalone browser-based AI coding assistant (AnimAIOS Code fork of Roo Code) - operates as a dumb execution runtime with no AIRI knowledge
+- **Hacking_Session**: The canonical state object owned by Electron main process representing current integration state
+- **Hacking_Session_Service**: Single orchestrator owning lifecycle, mode, process, and activation rules
+- **Code_Process**: The child process running Code_Backend (Fastify server on port 3210)
+- **Code_Bridge_Service**: Manages WebSocket connection, config sync, and summary stream from Code to AIRI
+- **UI_Adapter_Layer**: Manages BrowserView rendering, resizing, and visibility only (no authority)
 - **Main_Window**: The primary stage-tamagotchi Electron window
-- **AIRI_Chatbox**: The user input interface in Normal_Mode
-- **Code_Interface**: The embedded Code_Module UI visible during Hacking_Mode
-- **TTS_Narration**: Text-to-speech output for Code_Module summaries delivered through AIRI's voice
-- **IPC_Bridge**: The inter-process communication layer connecting Code_Backend to Electron main process
+- **Input_Gateway**: Normalized message bus that routes user input to AIRI or Code consumers
+- **Session_ID**: Shared identifier correlating AIRI and Code_Module activity across reconnects
+- **Bridge_Readiness**: Three-tier state (process_started → http_ready → bridge_ready) indicating Code_Backend availability
 - **Eventa**: The type-safe IPC/RPC framework used for all communication contracts
 
 ## Requirements
 
-### Requirement 1: Code Backend Process Lifecycle Management
+### Requirement 1: Hacking Session Service as Single Orchestrator
 
-**User Story:** As an AIRI user, I want the Code backend to start automatically when needed and shut down cleanly when the app closes, so that Hacking Mode is always available without manual intervention.
-
-#### Acceptance Criteria
-
-1. WHEN the Electron app starts, THE Process_Manager SHALL spawn Code_Process running Code_Backend on localhost:3210
-2. WHEN Code_Process initialization completes, THE Process_Manager SHALL verify Code_Backend responds to health checks within 5000ms
-3. IF Code_Process fails to start or respond, THEN THE Process_Manager SHALL log the error and set Hacking_Mode availability to degraded
-4. WHEN the Electron app quits, THE Process_Manager SHALL send SIGTERM to Code_Process and wait up to 3000ms for graceful shutdown
-5. IF Code_Process does not exit within timeout, THEN THE Process_Manager SHALL send SIGKILL to force termination
-6. WHEN Code_Process crashes unexpectedly, THE Process_Manager SHALL emit a status event indicating degraded state
-7. THE Process_Manager SHALL expose the Code_Process PID for monitoring and debugging
-
-### Requirement 2: BrowserView Embedding and Lifecycle
-
-**User Story:** As an AIRI user, I want the Code interface to appear seamlessly inside the AIRI window when Hacking Mode activates, so that I experience a unified application rather than separate windows.
+**User Story:** As a developer, I want a single service to own all Hacking Mode lifecycle, state, and coordination, so that there is one source of truth preventing state desync and race conditions.
 
 #### Acceptance Criteria
 
-1. WHEN Hacking_Mode activates, THE BrowserView_Controller SHALL create a BrowserView instance loading http://localhost:3210
-2. THE BrowserView_Controller SHALL attach the BrowserView to Main_Window with bounds matching the chat content area
-3. WHILE Hacking_Mode is active, THE BrowserView_Controller SHALL update BrowserView bounds whenever Main_Window resizes
-4. WHEN Main_Window resizes, THE BrowserView_Controller SHALL recalculate and apply new bounds within 16ms (one frame at 60fps)
-5. WHEN Hacking_Mode deactivates, THE BrowserView_Controller SHALL detach the BrowserView from Main_Window
-6. WHEN BrowserView detaches, THE BrowserView_Controller SHALL destroy the BrowserView instance to free resources
-7. THE BrowserView_Controller SHALL prevent BrowserView creation if Code_Backend health check fails
+1. THE Hacking_Session_Service SHALL be registered in the injeca container in `src/main/index.ts` with dependencies { lifecycle, mainWindow, serverChannel }
+2. THE Hacking_Session_Service SHALL maintain a canonical Hacking_Session state object with fields: { sessionId, state, processInfo, healthStatus, lastError }
+3. THE state field SHALL use finite state machine with exactly four values: "inactive", "starting", "active", "failed"
+4. WHEN Hacking_Session_Service starts, THE state SHALL initialize to "inactive"
+5. WHEN activation is requested, THE Hacking_Session_Service SHALL transition through: "starting" → "active" (on success) or "starting" → "failed" (on error)
+6. THE Hacking_Session_Service SHALL expose public methods: activate(config), deactivate(), getState(), getSessionId()
+7. THE Hacking_Session_Service SHALL own Code_Process lifecycle, Code_Bridge_Service instantiation, and UI_Adapter_Layer coordination
+8. WHEN state changes, THE Hacking_Session_Service SHALL emit a single Eventa broadcast event `electronHackingSessionStateChanged` with full state payload
+9. ALL other components SHALL subscribe to Hacking_Session state via Eventa events only
+10. THE Hacking_Session_Service SHALL generate a unique sessionId (UUID v4) on each activation and include it in all Code_Backend communication
 
-### Requirement 3: Mode Transition and State Management
+### Requirement 2: Code Process Lifecycle with Three-Tier Readiness
 
-**User Story:** As an AIRI user, I want to smoothly transition between Normal Mode and Hacking Mode with clear visual feedback, so that I understand which system (AIRI or Code) is handling my input.
-
-#### Acceptance Criteria
-
-1. THE Mode_Controller SHALL maintain a mode state of either "normal" or "hacking"
-2. WHEN a user activates Hacking_Mode, THE Mode_Controller SHALL transition from "normal" to "hacking" state
-3. WHEN transitioning to "hacking", THE Mode_Controller SHALL hide AIRI_Chatbox and show Code_Interface
-4. WHEN transitioning to "normal", THE Mode_Controller SHALL hide Code_Interface and show AIRI_Chatbox
-5. THE Mode_Controller SHALL persist the current mode state to local storage
-6. WHEN the app restarts, THE Mode_Controller SHALL restore the previously active mode
-7. WHILE in "hacking" mode, THE Mode_Controller SHALL route all user messages to Code_Interface
-
-### Requirement 4: User Input Routing
-
-**User Story:** As an AIRI user, I want my messages to go to the correct system (AIRI or Code) based on the current mode, so that my input is processed by the appropriate AI assistant.
+**User Story:** As a developer, I want Code_Process to progress through three distinct readiness states, so that activation only proceeds when WebSocket bridge is truly ready, not just HTTP.
 
 #### Acceptance Criteria
 
-1. WHILE Mode_Controller state is "normal", THE Input_Router SHALL send user messages to AIRI's chat processing pipeline
-2. WHILE Mode_Controller state is "hacking", THE Input_Router SHALL forward user messages to Code_Interface
-3. WHEN Code_Interface receives a message, THE Code_Module SHALL process it as if typed directly in the standalone browser interface
-4. THE Input_Router SHALL prevent message duplication across AIRI and Code_Module
-5. WHEN a user switches modes with pending input, THE Input_Router SHALL preserve the input text for the new mode
-6. THE Input_Router SHALL maintain separate message histories for AIRI and Code_Module
-7. WHEN transitioning between modes, THE Input_Router SHALL restore the appropriate message history
+1. WHEN Hacking_Session_Service.activate() is called, THE Service SHALL spawn Code_Process running Code_Backend on localhost:3210 with executable path `modules/code/apps/roo-code-standalone/dist/server.js`
+2. IF port 3210 is already in use, THEN THE Service SHALL log error, transition state to "failed", and set lastError to "Port conflict: 3210 already bound"
+3. WHEN Code_Process starts, THE Service SHALL wait for three-tier readiness: process_started → http_ready → bridge_ready
+4. THE process_started state SHALL be reached when Code_Process PID is available
+5. THE http_ready state SHALL be reached when GET http://localhost:3210/health returns HTTP 200 within 10000ms
+6. THE bridge_ready state SHALL be reached when WebSocket connection to ws://localhost:3210/bridge completes handshake with sessionId
+7. IF bridge_ready is not reached within 15000ms total, THEN THE Service SHALL transition to "failed" state and kill Code_Process
+8. WHEN the Electron app quits, THE Hacking_Session_Service SHALL send SIGTERM to Code_Process and wait up to 3000ms for graceful shutdown
+9. IF Code_Process does not exit within timeout, THEN THE Service SHALL send SIGKILL to force termination
+10. WHEN Code_Process crashes unexpectedly while state is "active", THE Service SHALL transition to "failed" and emit state change event
+11. THE Hacking_Session_Service SHALL log PID, port, startup duration, and all three readiness transitions using `@guiiai/logg` namespace "hacking-session"
 
-### Requirement 5: Code Summary Extraction and TTS Narration
+### Requirement 3: Code Bridge Service for WebSocket and Config Sync
 
-**User Story:** As an AIRI user, I want AIRI to narrate Code's progress summaries in her voice, so that I receive audio feedback about coding activities without reading text.
-
-#### Acceptance Criteria
-
-1. THE Summary_Extractor SHALL establish a WebSocket connection to Code_Backend's streaming endpoint
-2. WHEN Code_Module generates a task completion summary, THE Summary_Extractor SHALL extract the summary text
-3. WHEN summary text is extracted, THE Summary_Extractor SHALL emit a "code-summary-ready" event with the text payload
-4. WHEN a "code-summary-ready" event is emitted, THE TTS_Bridge SHALL send the summary text to AIRI's TTS pipeline
-5. THE TTS_Bridge SHALL use AIRI's configured voice settings for narration
-6. IF TTS generation fails, THEN THE TTS_Bridge SHALL log the error and continue without blocking Code_Module
-7. THE Summary_Extractor SHALL handle WebSocket reconnection if the connection drops
-
-### Requirement 6: Eventa IPC Contracts for Hacking Mode
-
-**User Story:** As a developer, I want type-safe IPC contracts for all Hacking Mode operations, so that renderer and main process communication is reliable and maintainable.
+**User Story:** As a developer, I want a single service to manage the WebSocket connection and config synchronization with Code_Backend, so that summary streaming and configuration are handled through one canonical path.
 
 #### Acceptance Criteria
 
-1. THE IPC_Contracts SHALL define an `electronHackingModeActivate` invoke event returning activation status
-2. THE IPC_Contracts SHALL define an `electronHackingModeDeactivate` invoke event returning deactivation status
-3. THE IPC_Contracts SHALL define an `electronHackingModeGetStatus` invoke event returning current mode and backend health
-4. THE IPC_Contracts SHALL define an `electronHackingModeStatusChanged` broadcast event with mode and health payload
-5. THE IPC_Contracts SHALL define an `electronCodeSummaryReceived` broadcast event with summary text payload
-6. THE IPC_Contracts SHALL include TypeScript interfaces for all payload structures
-7. ALL IPC contracts SHALL follow the existing Eventa naming convention (eventa:invoke:electron:hacking-mode:*)
+1. THE Code_Bridge_Service SHALL be instantiated by Hacking_Session_Service when state transitions to "starting"
+2. THE Code_Bridge_Service SHALL establish WebSocket connection to ws://localhost:3210/bridge with sessionId in handshake payload
+3. WHEN WebSocket connection opens, THE Code_Bridge_Service SHALL send authentication message: `{ type: "auth", sessionId, token: <shared-secret> }`
+4. IF authentication fails (Code_Backend responds with close code 4001), THEN THE Code_Bridge_Service SHALL emit error and not attempt reconnection
+5. WHEN Code_Backend emits a "summary" message, THE Code_Bridge_Service SHALL validate payload contains { text, metadata: { mode, model, tokens } }
+6. WHEN a valid summary is received, THE Code_Bridge_Service SHALL emit Eventa broadcast `electronCodeSummaryReceived` with payload { sessionId, text, metadata }
+7. THE Code_Bridge_Service SHALL ignore all other summary sources (BrowserView events, HTTP polling) to prevent duplication
+8. WHEN Hacking_Session_Service.activate() is called with config parameter, THE Code_Bridge_Service SHALL POST config to http://localhost:3210/config with sessionId header
+9. IF config sync fails, THEN THE Code_Bridge_Service SHALL log error but allow activation to proceed (Code uses stored settings)
+10. WHEN WebSocket connection closes unexpectedly, THE Code_Bridge_Service SHALL attempt reconnection with exponential backoff (base: 1000ms, max: 30000ms)
+11. WHEN Hacking_Session_Service.deactivate() is called, THE Code_Bridge_Service SHALL close WebSocket connection and stop reconnection attempts
+12. THE Code_Bridge_Service SHALL implement keepalive pings every 30000ms to detect stale connections
 
-### Requirement 7: Code Backend Health Monitoring
+### Requirement 4: UI Adapter Layer for BrowserView Management
 
-**User Story:** As an AIRI user, I want the system to detect when the Code backend is unhealthy and inform me gracefully, so that I know Hacking Mode is unavailable without experiencing silent failures.
-
-#### Acceptance Criteria
-
-1. THE Health_Monitor SHALL ping Code_Backend HTTP endpoint every 5000ms
-2. WHEN Code_Backend responds with HTTP 200, THE Health_Monitor SHALL mark status as "healthy"
-3. IF Code_Backend fails to respond within 2000ms, THEN THE Health_Monitor SHALL mark status as "degraded"
-4. IF three consecutive health checks fail, THEN THE Health_Monitor SHALL mark status as "error"
-5. WHEN status changes from "healthy" to "degraded" or "error", THE Health_Monitor SHALL emit status change event
-6. WHEN status changes to "error", THE Health_Monitor SHALL prevent Hacking_Mode activation attempts
-7. THE Health_Monitor SHALL expose current health status via `electronHackingModeGetStatus` IPC contract
-
-### Requirement 8: Settings UI Integration
-
-**User Story:** As an AIRI user, I want to configure Hacking Mode settings from the settings UI, so that I can control when and how Code integration activates.
+**User Story:** As a developer, I want BrowserView to be a dumb rendering surface with no authority, so that all state is controlled by Electron and we avoid dual control planes.
 
 #### Acceptance Criteria
 
-1. THE Settings_Page SHALL include a "Hacking Mode" section in the appropriate settings category
-2. THE Settings_Page SHALL display current Hacking_Mode status (active/inactive) and backend health (healthy/degraded/error)
-3. THE Settings_Page SHALL provide a toggle to activate or deactivate Hacking_Mode
-4. WHEN the toggle is activated, THE Settings_Page SHALL invoke `electronHackingModeActivate` and show loading state
-5. WHEN activation completes, THE Settings_Page SHALL update the UI to reflect active state
-6. THE Settings_Page SHALL display Code_Backend PID when available for debugging
-7. THE Settings_Page SHALL show the last error message if Code_Backend health is degraded or error
+1. THE UI_Adapter_Layer SHALL be a private implementation detail within Hacking_Session_Service
+2. WHEN Hacking_Session state transitions to "active", THE UI_Adapter_Layer SHALL create a BrowserView instance loading http://localhost:3210
+3. THE BrowserView SHALL be created with security settings: { nodeIntegration: false, contextIsolation: true, sandbox: true, webSecurity: true, allowRunningInsecureContent: false }
+4. THE BrowserView SHALL use session partition "persist:hacking-mode" for isolation
+5. THE BrowserView SHALL load content ONLY from http://localhost:3210 origin and reject all other origins
+6. THE UI_Adapter_Layer SHALL attach BrowserView to Main_Window with bounds matching chat content area (minimum: 320x240px)
+7. WHILE state is "active", THE UI_Adapter_Layer SHALL update BrowserView bounds whenever Main_Window resizes, recalculating within 16ms (60fps frame budget)
+8. IF BrowserView fails to load within 10000ms, THEN THE UI_Adapter_Layer SHALL retry once after 2000ms
+9. IF retry fails, THEN THE Hacking_Session_Service SHALL transition to "failed" state with lastError indicating load timeout
+10. WHEN state transitions from "active" to "inactive" or "failed", THE UI_Adapter_Layer SHALL detach and destroy BrowserView instance
+11. THE UI_Adapter_Layer SHALL NOT expose any Electron APIs to Code_Module via preload scripts
+12. THE UI_Adapter_Layer SHALL log BrowserView ID, bounds, and lifecycle events using namespace "hacking-session:ui"
 
-### Requirement 9: Error Handling and User Feedback
+### Requirement 5: Input Gateway for Normalized Message Routing
 
-**User Story:** As an AIRI user, I want clear error messages when Hacking Mode fails, so that I understand what went wrong and can take corrective action or report issues.
-
-#### Acceptance Criteria
-
-1. IF Code_Backend fails to start, THEN THE Error_Handler SHALL display a notification with the error message
-2. IF BrowserView fails to load Code_Interface, THEN THE Error_Handler SHALL retry once after 2000ms
-3. IF retry fails, THEN THE Error_Handler SHALL show a "Hacking Mode Unavailable" message with troubleshooting steps
-4. WHEN Code_Process crashes during active Hacking_Mode, THE Error_Handler SHALL automatically deactivate Hacking_Mode
-5. WHEN automatic deactivation occurs, THE Error_Handler SHALL show a notification explaining the crash and transition to Normal_Mode
-6. THE Error_Handler SHALL log all errors to the main process console with stack traces
-7. THE Error_Handler SHALL include the Code_Backend port and PID in error logs for debugging
-
-### Requirement 10: Keyboard Shortcuts for Mode Switching
-
-**User Story:** As an AIRI user, I want a keyboard shortcut to toggle between Normal Mode and Hacking Mode, so that I can quickly switch contexts without using the mouse.
+**User Story:** As a developer, I want user input to flow through a normalized message bus, so that routing is explicit, testable, and prevents DOM injection coupling.
 
 #### Acceptance Criteria
 
-1. THE Shortcut_Controller SHALL register Ctrl+Shift+H (Cmd+Shift+H on macOS) as the Hacking_Mode toggle shortcut
-2. WHEN the toggle shortcut is pressed in Normal_Mode, THE Shortcut_Controller SHALL activate Hacking_Mode
-3. WHEN the toggle shortcut is pressed in Hacking_Mode, THE Shortcut_Controller SHALL deactivate Hacking_Mode
-4. THE Shortcut_Controller SHALL prevent toggle during mode transition (debounce 500ms)
-5. IF Code_Backend health is "error", THEN THE Shortcut_Controller SHALL show an error notification instead of activating
-6. THE Shortcut_Controller SHALL use the existing global shortcut service pattern
-7. THE toggle shortcut SHALL be configurable via settings UI
+1. THE Input_Gateway SHALL be implemented as a message bus with methods: route(message, context), subscribe(consumer)
+2. THE Input_Gateway SHALL accept normalized messages with structure: { text: string, timestamp: number, sessionContext: string }
+3. WHEN Hacking_Session state is "inactive" or "failed", THE Input_Gateway SHALL route messages to AIRI_Consumer only
+4. WHEN Hacking_Session state is "active", THE Input_Gateway SHALL route messages to Code_Consumer only
+5. THE Input_Gateway SHALL ensure exactly one consumer receives each message (no duplication)
+6. THE AIRI_Consumer SHALL forward messages to AIRI's existing chat processing pipeline
+7. THE Code_Consumer SHALL send messages to Code_Backend via WebSocket (NOT via DOM injection into BrowserView)
+8. THE Input_Gateway SHALL enforce maximum message size of 10000 characters
+9. IF message exceeds size limit, THEN THE Input_Gateway SHALL truncate and log warning
+10. THE Input_Gateway SHALL maintain separate in-memory message histories (max 1000 messages each) for AIRI and Code consumers
+11. WHEN Hacking_Session state changes, THE Input_Gateway SHALL switch active consumer without replaying history
+12. THE Input_Gateway SHALL preserve pending input text in a buffer when state transitions occur
 
-### Requirement 11: Dependency Injection and Service Architecture
+### Requirement 6: TTS Narration via Single Event Path
 
-**User Story:** As a developer, I want Hacking Mode services to integrate with the existing injeca dependency injection system, so that service lifecycle is managed consistently with other AIRI modules.
-
-#### Acceptance Criteria
-
-1. THE Hacking_Mode_Service SHALL be registered in the injeca container in `src/main/index.ts`
-2. THE Hacking_Mode_Service SHALL depend on { lifecycle, mainWindow, serverChannel }
-3. WHEN injeca starts, THE Hacking_Mode_Service SHALL initialize Code_Process_Manager
-4. WHEN injeca stops, THE Hacking_Mode_Service SHALL shutdown Code_Process gracefully
-5. THE Hacking_Mode_Service SHALL expose public methods: activate(), deactivate(), getStatus()
-6. THE BrowserView_Controller SHALL be a private implementation detail within Hacking_Mode_Service
-7. THE Hacking_Mode_Service SHALL follow the existing service pattern used by MCP, widgets, and godot-stage
-
-### Requirement 12: Code Module Configuration Management
-
-**User Story:** As an AIRI user, I want the Code module to use my preferred LLM provider configuration, so that Hacking Mode uses the same AI model settings as the rest of AIRI.
+**User Story:** As an AIRI user, I want AIRI to narrate Code's progress summaries in her voice via a single canonical event path, so that I receive audio feedback without duplication or race conditions.
 
 #### Acceptance Criteria
 
-1. THE Config_Sync SHALL read AIRI's current LLM provider settings from the app config
-2. WHEN Hacking_Mode activates, THE Config_Sync SHALL send provider configuration to Code_Backend via HTTP POST
-3. THE Code_Backend SHALL accept provider configuration and update Code_Module settings
-4. WHEN AIRI's provider settings change, THE Config_Sync SHALL push updated config to Code_Backend if Hacking_Mode is active
-5. THE Config_Sync SHALL map AIRI provider config format to Code_Module's expected format
-6. IF config sync fails, THEN THE Config_Sync SHALL log the error but allow Hacking_Mode to continue with Code_Module's stored settings
-7. THE Config_Sync SHALL support all providers that both AIRI and Code_Module have in common
+1. THE TTS_Narrator SHALL subscribe to Eventa broadcast event `electronCodeSummaryReceived` ONLY (ignoring all other summary sources)
+2. WHEN `electronCodeSummaryReceived` event is received with payload { sessionId, text, metadata }, THE TTS_Narrator SHALL validate sessionId matches current Hacking_Session sessionId
+3. IF sessionId mismatch occurs, THEN THE TTS_Narrator SHALL ignore the event and log warning "Summary from stale session"
+4. WHEN sessionId validates, THE TTS_Narrator SHALL send summary text to AIRI's existing TTS pipeline
+5. THE TTS_Narrator SHALL use AIRI's configured voice settings for narration (voice model, speed, pitch)
+6. IF TTS generation fails, THEN THE TTS_Narrator SHALL log error with namespace "hacking-session:tts" but continue without blocking Code_Module
+7. THE TTS_Narrator SHALL implement throttling: max 1 narration per 2000ms to prevent audio overlap
+8. IF summaries arrive faster than throttle limit, THEN THE TTS_Narrator SHALL queue them and process in order
 
-### Requirement 13: WebSocket Bridge for Real-time Communication
+### Requirement 7: Eventa IPC Contracts (Minimal Set)
 
-**User Story:** As a developer, I want a WebSocket bridge between Code Backend and Electron main process, so that real-time events (summaries, status changes) flow efficiently from Code to AIRI.
-
-#### Acceptance Criteria
-
-1. THE WebSocket_Bridge SHALL establish a WebSocket connection from Electron main to Code_Backend at ws://localhost:3210/bridge
-2. WHEN connection is established, THE WebSocket_Bridge SHALL send an authentication message with a shared token
-3. WHEN Code_Backend generates a summary, THE WebSocket_Bridge SHALL receive a "summary" message with text payload
-4. WHEN a "summary" message is received, THE WebSocket_Bridge SHALL emit `electronCodeSummaryReceived` event
-5. THE WebSocket_Bridge SHALL handle connection close events and attempt reconnection with exponential backoff
-6. THE WebSocket_Bridge SHALL close the connection when Hacking_Mode deactivates
-7. THE WebSocket_Bridge SHALL use a maximum backoff of 30000ms for reconnection attempts
-
-### Requirement 14: Code Backend Custom Endpoint for Summary Streaming
-
-**User Story:** As a developer, I want Code Backend to expose a dedicated endpoint for streaming summaries to Electron, so that AIRI can receive Code's output without polling the UI state.
+**User Story:** As a developer, I want type-safe IPC contracts for Hacking Session operations with minimal duplication, so that renderer and main process communication is reliable without redundant events.
 
 #### Acceptance Criteria
 
-1. THE Code_Backend SHALL implement a `/bridge` WebSocket endpoint for Electron connections
-2. WHEN a WebSocket client connects to `/bridge`, THE Code_Backend SHALL validate authentication token
-3. IF authentication fails, THEN THE Code_Backend SHALL close the WebSocket with 4001 code
-4. WHEN Code_Module generates a task summary, THE Code_Backend SHALL emit a "summary" message to all authenticated `/bridge` clients
-5. THE Code_Backend SHALL include task metadata (mode, model, tokens) in summary messages
-6. THE Code_Backend SHALL throttle summary messages to max 1 per second per client
+1. THE IPC_Contracts SHALL define exactly TWO invoke events:
+   - `electronHackingSessionActivate` (params: { codeMode?: string, providerConfig?: object }) returns { success: boolean, sessionId?: string, error?: string }
+   - `electronHackingSessionDeactivate` returns { success: boolean }
+2. THE IPC_Contracts SHALL define exactly TWO broadcast events:
+   - `electronHackingSessionStateChanged` with payload: { sessionId: string | null, state: "inactive" | "starting" | "active" | "failed", processInfo?: { pid: number, port: number }, lastError?: string }
+   - `electronCodeSummaryReceived` with payload: { sessionId: string, text: string, metadata: { mode: string, model: string, tokens: number } }
+3. THE IPC_Contracts SHALL include TypeScript interfaces for all payload structures
+4. ALL IPC contracts SHALL follow the existing Eventa naming convention (eventa:invoke:electron:hacking-session:*, eventa:broadcast:electron:*)
+5. THE IPC_Contracts SHALL NOT include separate health monitoring events (health is derived from state field)
+6. THE IPC_Contracts SHALL NOT include mode-only events (mode is part of state payload)
+
+### Requirement 8: Code Module as Dumb Execution Runtime
+
+**User Story:** As a developer, I want Code_Module to have no knowledge of AIRI and operate as a pure execution runtime, so that coupling is minimized and Code remains independently testable.
+
+#### Acceptance Criteria
+
+1. THE Code_Module SHALL NOT import any AIRI-specific types, modules, or configurations
+2. THE Code_Module SHALL accept configuration via HTTP POST /config endpoint with generic payload: { provider: object, mode: string, sessionId: string }
+3. WHEN Code_Module receives configuration, THE Code_Module SHALL apply settings to its internal state without validating against AIRI schema
+4. THE Code_Module SHALL emit summaries via WebSocket /bridge with payload: { type: "summary", text: string, metadata: object, sessionId: string }
+5. THE Code_Module SHALL NOT maintain any AIRI session state or awareness of whether it is embedded vs standalone
+6. THE Code_Module SHALL execute LLM tasks based solely on input messages received via WebSocket, treating all clients identically
+7. THE Code_Module SHALL throttle summary emissions to max 1 per second per WebSocket client connection
+8. THE Code_Module SHALL validate authentication token on /bridge WebSocket connections and close with code 4001 if invalid
+
+### Requirement 9: Settings UI Integration
+
+**User Story:** As an AIRI user, I want to configure Hacking Session settings from the settings UI, so that I can control activation, see status, and select Code modes.
+
+#### Acceptance Criteria
+
+1. THE Settings_Page SHALL include a "Hacking Mode" section in the appropriate settings category (e.g., "Developer Tools" or "Advanced")
+2. THE Settings_Page SHALL subscribe to `electronHackingSessionStateChanged` and display current state: "Inactive", "Starting...", "Active", or "Failed"
+3. WHEN state is "active", THE Settings_Page SHALL display processInfo.pid and processInfo.port for debugging
+4. WHEN state is "failed", THE Settings_Page SHALL display lastError message with red/error styling
+5. THE Settings_Page SHALL provide a toggle button with labels: "Activate Hacking Mode" (when inactive) / "Deactivate Hacking Mode" (when active)
+6. WHEN toggle is clicked and state is "inactive", THE Settings_Page SHALL invoke `electronHackingSessionActivate` with { codeMode: <selected-mode>, providerConfig: <airi-config> } and show loading spinner
+7. WHEN toggle is clicked and state is "active", THE Settings_Page SHALL invoke `electronHackingSessionDeactivate` and show loading spinner
+8. THE Settings_Page SHALL disable the toggle button while state is "starting" (prevent duplicate activation)
+9. THE Settings_Page SHALL include a dropdown for selecting Code mode with options: "Spec", "Vibe", "Boss", "Ask", "Debug" (default: "Vibe")
+10. WHEN mode selection changes, THE Settings_Page SHALL persist choice to app config and only apply on next activation
+11. THE Settings_Page SHALL include keyboard shortcut display: "Ctrl+Shift+H (Cmd+Shift+H on macOS)" with explanatory text
+
+### Requirement 10: Error Handling and User Notifications
+
+**User Story:** As an AIRI user, I want clear error messages when Hacking Session fails, so that I understand what went wrong and can take corrective action.
+
+#### Acceptance Criteria
+
+1. WHEN Hacking_Session state transitions to "failed", THE Hacking_Session_Service SHALL display a notification with title "Hacking Mode Failed" and message from lastError field
+2. THE notification SHALL include troubleshooting steps based on error type:
+   - Port conflict: "Port 3210 is in use. Close conflicting application or change Code backend port."
+   - Process crash: "Code backend crashed. Check logs in ~/.kiro/logs/hacking-session.log"
+   - Timeout: "Code backend did not become ready in time. Ensure modules/code dependencies are installed."
+3. WHEN Code_Process crashes while state is "active", THE Hacking_Session_Service SHALL automatically transition to "failed" and deactivate
+4. THE Hacking_Session_Service SHALL log all errors to main process console using `@guiiai/logg` with namespace "hacking-session" and level "error"
+5. ERROR logs SHALL include: timestamp, sessionId, state before error, error message, stack trace, processInfo (PID, port)
+6. WHEN BrowserView load fails after retry, THE lastError SHALL be set to "BrowserView failed to load after 2 attempts"
+7. THE Settings_Page SHALL display a "Retry" button when state is "failed"
+
+### Requirement 11: Keyboard Shortcut for Toggle
+
+**User Story:** As an AIRI user, I want a keyboard shortcut to toggle Hacking Session on/off, so that I can quickly switch contexts without using the mouse.
+
+#### Acceptance Criteria
+
+1. THE Shortcut_Controller SHALL register Ctrl+Shift+H (Cmd+Shift+H on macOS) as the Hacking Session toggle shortcut using existing global shortcut service
+2. WHEN shortcut is pressed and Hacking_Session state is "inactive", THE Shortcut_Controller SHALL invoke `electronHackingSessionActivate`
+3. WHEN shortcut is pressed and Hacking_Session state is "active", THE Shortcut_Controller SHALL invoke `electronHackingSessionDeactivate`
+4. WHEN shortcut is pressed and state is "starting", THE Shortcut_Controller SHALL do nothing (debounce to prevent double activation)
+5. WHEN shortcut is pressed and state is "failed", THE Shortcut_Controller SHALL attempt activation (implicit retry)
+6. THE shortcut SHALL be configurable via settings UI (stored in app config as "hackingModeShortcut")
+7. THE Shortcut_Controller SHALL display notification when shortcut is triggered: "Activating Hacking Mode..." or "Deactivating Hacking Mode..."
+
+### Requirement 12: Renderer Integration and State Subscription
+
+**User Story:** As a developer, I want renderer components to subscribe to Hacking Session state via Eventa, so that UI updates are reactive and derived from single source of truth.
+
+#### Acceptance Criteria
+
+1. THE Chat_Component (renderer) SHALL subscribe to `electronHackingSessionStateChanged` broadcast event
+2. WHEN state is "inactive" or "failed", THE Chat_Component SHALL display AIRI chatbox and hide Code BrowserView overlay
+3. WHEN state is "active", THE Chat_Component SHALL hide AIRI chatbox and show Code BrowserView overlay
+4. WHEN state is "starting", THE Chat_Component SHALL display loading indicator: "Activating Hacking Mode..."
+5. THE Chat_Component SHALL use CSS transitions (duration: 300ms) for smooth visibility changes
+6. THE Chat_Component SHALL ensure only ONE interface is visible at a time (no overlap)
+7. THE Chat_Component SHALL pass current Hacking_Session state to Input_Gateway for routing decisions
+8. THE Chat_Component SHALL display visual indicator badge when state is "active": "Code Mode: <mode>" (e.g., "Code Mode: Vibe")
+
+### Requirement 13: Session Identity and Correlation
+
+**User Story:** As a developer, I want a shared session ID to correlate activity across AIRI and Code_Module, so that reconnects, logs, and summaries can be tracked across the lifecycle.
+
+#### Acceptance Criteria
+
+1. THE Hacking_Session_Service SHALL generate a unique sessionId (UUID v4) when state transitions from "inactive" to "starting"
+2. THE sessionId SHALL be included in Code_Bridge_Service WebSocket handshake: `{ type: "auth", sessionId, token }`
+3. THE sessionId SHALL be included in HTTP POST to /config endpoint as header: `X-Session-ID: <sessionId>`
+4. WHEN Code_Module emits summary messages, THE payload SHALL include sessionId: `{ type: "summary", sessionId, text, metadata }`
+5. THE Hacking_Session_Service SHALL include sessionId in all log entries using structured logging: `{ sessionId, level, message, ... }`
+6. WHEN state transitions to "inactive", THE sessionId SHALL be cleared (set to null)
+7. IF Code_Bridge_Service receives a message with mismatched sessionId, THE Service SHALL log warning and ignore the message
+8. THE sessionId SHALL be exposed in `electronHackingSessionStateChanged` payload for debugging and correlation
+
+### Requirement 14: Code Backend WebSocket Bridge Endpoint
+
+**User Story:** As a developer, I want Code Backend to expose a /bridge WebSocket endpoint for Electron connections, so that summaries and metadata flow to AIRI without polling.
+
+#### Acceptance Criteria
+
+1. THE Code_Backend SHALL implement a WebSocket endpoint at ws://localhost:3210/bridge
+2. WHEN a WebSocket client connects to /bridge, THE Code_Backend SHALL expect handshake message: `{ type: "auth", sessionId: string, token: string }`
+3. THE Code_Backend SHALL validate token against shared secret (environment variable CODE_BRIDGE_TOKEN or default: "animaios-hacking-bridge")
+4. IF authentication fails (invalid token), THEN THE Code_Backend SHALL close WebSocket with code 4001 and reason "Authentication failed"
+5. IF authentication succeeds, THEN THE Code_Backend SHALL store connection with sessionId mapping
+6. WHEN Code_Module completes a task and generates a summary, THE Code_Backend SHALL emit to all authenticated /bridge clients: `{ type: "summary", sessionId, text, metadata: { mode, model, tokens } }`
 7. THE Code_Backend SHALL implement keepalive pings every 30000ms to detect stale connections
+8. THE Code_Backend SHALL close connections gracefully when receiving SIGTERM or SIGINT signals
 
-### Requirement 15: BrowserView Isolation and Security
+### Requirement 15: Code Backend Configuration Endpoint
 
-**User Story:** As a developer, I want BrowserView to run Code Module in an isolated context with appropriate security settings, so that Code operations cannot interfere with AIRI's main renderer or compromise user data.
-
-#### Acceptance Criteria
-
-1. THE BrowserView SHALL be created with `nodeIntegration: false` and `contextIsolation: true`
-2. THE BrowserView SHALL enable `sandbox: true` for additional isolation
-3. THE BrowserView SHALL use a separate session partition "persist:hacking-mode"
-4. THE BrowserView SHALL disable `webSecurity: false` to prevent bypassing CORS for localhost
-5. THE BrowserView SHALL set `allowRunningInsecureContent: false` to prevent mixed content
-6. THE BrowserView_Controller SHALL not expose any Electron APIs to Code_Module via preload scripts
-7. THE BrowserView SHALL load content only from http://localhost:3210 and reject other origins
-
-### Requirement 16: Logging and Debugging Support
-
-**User Story:** As a developer, I want comprehensive logging for Hacking Mode operations, so that I can diagnose issues in production and development environments.
+**User Story:** As a developer, I want Code Backend to accept configuration via HTTP POST, so that AIRI can sync provider settings without Code_Module knowing about AIRI.
 
 #### Acceptance Criteria
 
-1. THE Hacking_Mode_Service SHALL use `@guiiai/logg` for all logging with namespace "hacking-mode"
-2. WHEN Code_Process starts, THE Service SHALL log PID, port, and startup duration
-3. WHEN BrowserView is created or destroyed, THE Service SHALL log BrowserView ID and bounds
-4. WHEN mode transitions occur, THE Service SHALL log previous state, new state, and transition reason
-5. WHEN errors occur, THE Service SHALL log error messages with stack traces and context
-6. THE Service SHALL log WebSocket connection state changes with timestamp
-7. THE Service SHALL log health check results every 30000ms when in debug mode
+1. THE Code_Backend SHALL implement HTTP POST endpoint at /config accepting JSON payload: `{ provider: object, mode: string, sessionId: string }`
+2. THE Code_Backend SHALL validate X-Session-ID header matches sessionId in payload
+3. IF sessionId mismatch, THEN THE Code_Backend SHALL respond with HTTP 400 "Session ID mismatch"
+4. IF valid, THE Code_Backend SHALL apply provider config to Code_Module settings (overwriting stored settings)
+5. THE Code_Backend SHALL apply mode selection (Spec, Vibe, Boss, Ask, Debug) to active instance
+6. THE Code_Backend SHALL respond with HTTP 200 and JSON: `{ success: true, appliedConfig: { provider: string, mode: string } }`
+7. IF config application fails, THEN THE Code_Backend SHALL respond with HTTP 500 and error message
+8. THE Code_Backend SHALL NOT persist configuration (config is ephemeral per session)
+9. THE Code_Backend SHALL accept configuration updates while running (hot reload)
 
-### Requirement 17: Code Module Mode Selection Integration
+### Requirement 16: Provider Configuration Mapping
 
-**User Story:** As an AIRI user, I want to select which Code mode (Spec, Vibe, Boss, Ask, Debug) to use when Hacking Mode activates, so that I can choose the appropriate coding workflow for my task.
-
-#### Acceptance Criteria
-
-1. THE Settings_Page SHALL include a dropdown for selecting Code_Module mode (Spec, Vibe, Boss, Ask, Debug)
-2. WHEN mode selection changes, THE Settings_Page SHALL persist the choice to app config
-3. WHEN Hacking_Mode activates, THE Mode_Controller SHALL send the selected mode to Code_Backend via HTTP POST
-4. THE Code_Backend SHALL apply the mode selection to Code_Module's active instance
-5. THE Settings_Page SHALL display a description of each mode (taken from Code module documentation)
-6. THE Settings_Page SHALL default to "Vibe" mode if no selection is stored
-7. THE mode selection SHALL only take effect on next Hacking_Mode activation
-
-### Requirement 18: Graceful Degradation When Code Module Unavailable
-
-**User Story:** As an AIRI user, I want AIRI to continue working normally if Code Module fails to start, so that a Hacking Mode issue doesn't prevent me from using AIRI's core features.
+**User Story:** As a developer, I want AIRI's provider config to be mapped to Code_Module format, so that users don't need to configure providers twice.
 
 #### Acceptance Criteria
 
-1. IF Code_Backend fails to start, THEN THE Process_Manager SHALL log the error and mark status as "unavailable"
-2. WHEN status is "unavailable", THE Hacking_Mode UI controls SHALL be disabled with a tooltip explaining the issue
-3. THE Main_Window SHALL load and function normally regardless of Code_Backend status
-4. THE Settings_Page SHALL show Code_Backend status as "Unavailable" with last error message
-5. THE Settings_Page SHALL provide a "Retry" button to attempt Code_Backend restart
-6. WHEN retry is clicked, THE Process_Manager SHALL attempt to start Code_Process again
-7. THE AIRI chat interface SHALL remain fully functional in Normal_Mode regardless of Hacking_Mode availability
+1. THE Hacking_Session_Service SHALL read AIRI's current provider configuration from app config when activate() is called
+2. THE Hacking_Session_Service SHALL extract provider fields: { name, apiKey, baseUrl?, model?, temperature?, maxTokens? }
+3. THE Hacking_Session_Service SHALL map AIRI provider names to Code_Module provider names using lookup table:
+   - "openai" → "openai"
+   - "anthropic" → "anthropic"
+   - "gemini" → "gemini"
+   - "openrouter" → "openrouter"
+   - (extend as needed for common providers)
+4. IF AIRI provider name is not in lookup table, THEN THE Service SHALL pass provider name unchanged and log warning
+5. THE Hacking_Session_Service SHALL construct config payload: `{ provider: { name: <mapped>, apiKey, baseUrl?, model?, temperature?, maxTokens? }, mode: <selected>, sessionId }`
+6. THE Code_Bridge_Service SHALL send config payload to POST /config after WebSocket handshake completes
+7. IF config POST fails, THEN THE Service SHALL log error but continue activation (Code uses stored settings)
+8. THE mapping table SHALL be configurable via app config for extensibility
+
+### Requirement 17: Graceful Degradation and AIRI Continuity
+
+**User Story:** As an AIRI user, I want AIRI to continue working normally if Hacking Session fails, so that a Code integration issue doesn't prevent me from using AIRI's core features.
+
+#### Acceptance Criteria
+
+1. IF Code_Process fails to start within 30000ms during app initialization, THEN THE Hacking_Session_Service SHALL mark state as "failed" and continue AIRI startup
+2. THE Main_Window SHALL load and render normally regardless of Hacking_Session state
+3. THE Chat_Component SHALL display AIRI chatbox and function normally when state is "failed" or "inactive"
+4. WHEN state is "failed", THE Settings_Page SHALL display error message with "Retry" button
+5. WHEN "Retry" button is clicked, THE Settings_Page SHALL invoke `electronHackingSessionActivate` (implicit retry)
+6. THE AIRI chat interface SHALL support all core features in "inactive" state: text input, TTS, provider selection, history, settings
+7. THE Hacking_Session_Service SHALL NOT block AIRI initialization or operation
+8. IF state is "failed" at app startup, THE Hacking_Session_Service SHALL log error to ~/.kiro/logs/hacking-session.log but NOT show notification (avoid startup spam)
+
+### Requirement 18: Logging and Observability
+
+**User Story:** As a developer, I want comprehensive structured logging for all Hacking Session operations, so that I can diagnose issues in production and development environments.
+
+#### Acceptance Criteria
+
+1. THE Hacking_Session_Service SHALL use `@guiiai/logg` for all logging with namespace "hacking-session"
+2. THE Hacking_Session_Service SHALL use structured logging with fields: { sessionId, state, timestamp, level, message, metadata }
+3. WHEN state transitions occur, THE Service SHALL log: { level: "info", message: "State transition", from: <old-state>, to: <new-state>, reason: <trigger> }
+4. WHEN Code_Process starts, THE Service SHALL log: { level: "info", message: "Process started", pid, port, startupDuration: <ms> }
+5. WHEN errors occur, THE Service SHALL log: { level: "error", message: <error>, stack: <trace>, context: { sessionId, state, processInfo } }
+6. THE Code_Bridge_Service SHALL log WebSocket state changes: { level: "debug", message: "WebSocket <event>", sessionId, event: "connected" | "disconnected" | "error" }
+7. THE UI_Adapter_Layer SHALL log BrowserView lifecycle: { level: "debug", message: "BrowserView <event>", id: <view-id>, bounds: { x, y, width, height } }
+8. ALL log entries SHALL include timestamp (ISO 8601 format) and sessionId when available
+9. THE Hacking_Session_Service SHALL write logs to ~/.kiro/logs/hacking-session.log with daily rotation (max 7 days retention)
+10. IN debug mode (env var HACKING_SESSION_DEBUG=1), THE Service SHALL also log to console and include additional metadata
 
