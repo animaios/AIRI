@@ -3,6 +3,7 @@ import WebSocket from 'ws'
 import { useLogg } from '@guiiai/logg'
 
 import { electronCodeSummaryReceived } from '../../../shared/ipc/hackingSession'
+import type { CodeMode } from '../../../shared/hacking-session'
 
 /**
  * CodeBridgeService manages WebSocket connection to Code_Backend.
@@ -273,7 +274,7 @@ export function setupCodeBridgeService(
    */
   function stopKeepalive(): void {
     if (keepaliveTimer) {
-      clearTimeout(keepaliveTimer)
+      clearInterval(keepaliveTimer)
       keepaliveTimer = null
     }
   }
@@ -290,7 +291,7 @@ export function setupCodeBridgeService(
       temperature?: number
       maxTokens?: number
     },
-    codeMode: 'spec' | 'vibe' | 'boss' | 'ask' | 'debug',
+    codeMode: CodeMode,
   ): Promise<void> {
     // Only send if we have an open connection
     if (!ws || ws.readyState !== WebSocket.OPEN) {
