@@ -188,8 +188,8 @@ export function resolveArtistryConfigFromStore(store: ReturnType<typeof useArtis
    */
   const unwrap = <T>(val: T | Ref<T>): T => {
     if (isRef(val)) return val.value
-    if (val !== null && typeof val === 'object' && 'value' in val) {
-      return (val as { value: T }).value
+    if (val !== null && typeof val === 'object' && 'value' in (val as object)) {
+      return (val as unknown as { value: T }).value
     }
     return val
   }

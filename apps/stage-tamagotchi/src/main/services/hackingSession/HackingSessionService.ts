@@ -8,6 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises'
 
 import { useLogg } from '@guiiai/logg'
 import { getPort } from 'get-port-please'
+import WebSocket from 'ws'
 
 import { onAppBeforeQuit } from '../../libs/bootkit/lifecycle'
 
