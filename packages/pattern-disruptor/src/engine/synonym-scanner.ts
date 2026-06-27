@@ -20,24 +20,26 @@ interface TokenStats {
   count: number
 }
 
+function shouldTrackToken(token: string, language: ResolvedPatternDisruptorLanguage): boolean {
+  return token.length >= 3 && !isStopword(token, language)
+}
+
+function incrementTokenStats(stats: Map<string, TokenStats>, token: string, normalizedWord: string) {
+  const existing = stats.get(normalizedWord)
+  stats.set(normalizedWord, {
+    originalWord: existing?.originalWord ?? token,
+    normalizedWord,
+    count: (existing?.count ?? 0) + 1,
+  })
+}
+
 function collectTokenStats(messages: string[], language: ResolvedPatternDisruptorLanguage): TokenStats[] {
   const stats = new Map<string, TokenStats>()
 
   for (const message of messages) {
     for (const token of tokenizeWords(message)) {
       const normalizedWord = normalizeToken(token, language)
-      if (normalizedWord.length < 4 || isStopword(normalizedWord, language)) continue
-
-      const existing = stats.get(normalizedWord)
-      if (existing) {
-        existing.count += 1
-      } else {
-        stats.set(normalizedWord, {
-          originalWord: token,
-          normalizedWord,
-          count: 1,
-        })
-      }
+      if (shouldTrackToken(normalizedWord, language)) incrementTokenStats(stats, token, normalizedWord)
     }
   }
 

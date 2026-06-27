@@ -23,6 +23,17 @@ interface GenerateRandomWordsInput {
   random?: () => number
 }
 
+interface RandomWordGenerationContext {
+  userMessage: string
+  filteredBank: WordBankEntry[]
+  count: number
+  synonyms: SynonymMap
+  language: ResolvedPatternDisruptorLanguage
+  history: Set<string>
+  settings: PatternDisruptorSettings
+  random: () => number
+}
+
 function pick<T>(items: T[], random: () => number): T | undefined {
   if (items.length === 0) return undefined
   return items[Math.floor(random() * items.length)]
@@ -51,6 +62,23 @@ function normalizeWordSet(words: Iterable<string> | undefined): Set<string> {
   return new Set(Array.from(words ?? []).map((word) => word.toLowerCase()))
 }
 
+function isAllowedWordBankEntry(input: {
+  word: string
+  partOfSpeech: PatternDisruptorPartOfSpeechCode
+  partsOfSpeech: Set<PatternDisruptorPartOfSpeechCode>
+  blacklist: Set<string>
+  history: Set<string>
+  exactLength: number
+}): boolean {
+  const lower = input.word.toLowerCase()
+  return (
+    !input.blacklist.has(lower) &&
+    !input.history.has(lower) &&
+    (input.partsOfSpeech.size === 0 || input.partsOfSpeech.has(input.partOfSpeech)) &&
+    (input.exactLength <= 0 || input.word.length === input.exactLength)
+  )
+}
+
 function filterWordBank(input: {
   bank: WordBankEntry[]
   settings: PatternDisruptorSettings
@@ -61,12 +89,25 @@ function filterWordBank(input: {
   const exactLength = input.settings.randomWords.wordLength
 
   return input.bank.filter(([word, partOfSpeech]) => {
-    const lower = word.toLowerCase()
-    if (blacklist.has(lower) || input.history.has(lower)) return false
-    if (partsOfSpeech.size > 0 && !partsOfSpeech.has(partOfSpeech)) return false
-    if (exactLength > 0 && word.length !== exactLength) return false
-    return true
+    return isAllowedWordBankEntry({
+      word,
+      partOfSpeech,
+      partsOfSpeech,
+      blacklist,
+      history: input.history,
+      exactLength,
+    })
   })
+}
+
+function canUseUniqueWord(input: {
+  word: string
+  seen: Set<string>
+  history: Set<string>
+  blacklist: Set<string>
+}): boolean {
+  const lower = input.word.toLowerCase()
+  return Boolean(input.word) && !input.seen.has(lower) && !input.history.has(lower) && !input.blacklist.has(lower)
 }
 
 function uniqueWords(words: string[], count: number, history: Set<string>, settings: PatternDisruptorSettings) {
@@ -75,8 +116,8 @@ function uniqueWords(words: string[], count: number, history: Set<string>, setti
   const result: string[] = []
 
   for (const word of words) {
+    if (!canUseUniqueWord({ word, seen, history, blacklist })) continue
     const lower = word.toLowerCase()
-    if (!word || seen.has(lower) || history.has(lower) || blacklist.has(lower)) continue
     seen.add(lower)
     result.push(word)
     if (result.length >= count) break
@@ -124,19 +165,10 @@ function doublePassMode(input: {
   return uniqueWords([anchor, ...associations, ...fallback], input.count, input.history, input.settings)
 }
 
-function contextualMode(input: {
-  userMessage: string
-  filteredBank: WordBankEntry[]
-  count: number
-  synonyms: SynonymMap
-  language: ResolvedPatternDisruptorLanguage
-  history: Set<string>
-  settings: PatternDisruptorSettings
-  random: () => number
-}): string[] {
+function contextualMode(input: RandomWordGenerationContext): string[] {
   const keywords = tokenizeWords(input.userMessage)
     .map((token) => normalizeToken(token, input.language))
-    .filter((token) => token.length >= 4 && !isStopword(token, input.language) && Boolean(input.synonyms[token]))
+    .filter((token) => !isStopword(token, input.language) && Boolean(input.synonyms[token]))
 
   const anchor = pick(Array.from(new Set(keywords)), input.random)
   if (!anchor) return doublePassMode(input)
@@ -150,33 +182,36 @@ function contextualMode(input: {
   return uniqueWords([...associations, ...fallback], input.count, input.history, input.settings)
 }
 
+function createGenerationContext(input: GenerateRandomWordsInput): RandomWordGenerationContext {
+  const language = resolvePatternDisruptorLanguage(input.settings.language, input.userMessage)
+  const history = normalizeWordSet(input.wordHistory)
+  const filteredBank = filterWordBank({
+    bank: getWordBank(language),
+    settings: input.settings,
+    history,
+  })
+
+  return {
+    userMessage: input.userMessage,
+    filteredBank,
+    count: input.settings.randomWords.wordCount,
+    synonyms: getSynonymMap(language),
+    language,
+    history,
+    settings: input.settings,
+    random: input.random ?? Math.random,
+  }
+}
+
+const WORD_GENERATORS = {
+  contextual: contextualMode,
+  'double-pass': doublePassMode,
+  random: (context: RandomWordGenerationContext) =>
+    uniqueWords(randomMode(context), context.count, context.history, context.settings),
+}
+
 export function generateRandomWords(input: GenerateRandomWordsInput): string[] {
   if (!input.settings.enabled || !input.settings.randomWords.enabled) return []
-
-  const random = input.random ?? Math.random
-  const language = resolvePatternDisruptorLanguage(input.settings.language, input.userMessage)
-  const bank = getWordBank(language)
-  const synonyms = getSynonymMap(language)
-  const history = normalizeWordSet(input.wordHistory)
-  const filteredBank = filterWordBank({ bank, settings: input.settings, history })
-  const count = input.settings.randomWords.wordCount
-
-  if (input.settings.randomWords.mode === 'contextual') {
-    return contextualMode({
-      userMessage: input.userMessage,
-      filteredBank,
-      count,
-      synonyms,
-      language,
-      history,
-      settings: input.settings,
-      random,
-    })
-  }
-
-  if (input.settings.randomWords.mode === 'double-pass') {
-    return doublePassMode({ filteredBank, count, synonyms, language, history, settings: input.settings, random })
-  }
-
-  return uniqueWords(randomMode({ filteredBank, count, random }), count, history, input.settings)
+  const context = createGenerationContext(input)
+  return WORD_GENERATORS[input.settings.randomWords.mode](context)
 }

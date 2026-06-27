@@ -6,7 +6,7 @@ import { generateRandomWords } from './random-words'
 import { scanSynonymOveruse } from './synonym-scanner'
 
 function renderTemplate(template: string, values: Record<string, string | number>): string {
-  return template.replace(/\{\{(\w+)\}\}/g, (_, key: string) => String(values[key] ?? ''))
+  return template.replace(/\{\{\s*(\w+)\s*\}\}/g, (_, key: string) => String(values[key] ?? ''))
 }
 
 function countPromptWords(text: string): number {

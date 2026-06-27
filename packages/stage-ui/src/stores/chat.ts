@@ -71,6 +71,7 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
   const cardStore = useAiriCardStore()
   const contextObservability = useContextObservabilityStore()
   const { activeSessionId } = storeToRefs(chatSession)
+  const { activeCardId } = storeToRefs(cardStore)
   const { streamingMessage } = storeToRefs(chatStream)
 
   const sending = ref(false)
@@ -238,6 +239,10 @@ export const useChatOrchestratorStore = defineStore('chat-orchestrator', () => {
 
   watch(sending, (next) => {
     if (runtime.getSending() !== next) runtime.setSending(next)
+  })
+
+  watch([activeSessionId, activeCardId], () => {
+    patternDisruptorStore.resetState()
   })
 
   async function ingest(sendingMessage: string, options: ChatOrchestratorSendOptions, targetSessionId?: string) {

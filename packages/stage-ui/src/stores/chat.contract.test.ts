@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { nextTick, ref } from 'vue'
 
 import { useChatOrchestratorStore } from './chat'
+import { usePatternDisruptorStore } from './pattern-disruptor'
 
 vi.hoisted(() => {
   // deepsource:issue=JS-0323
@@ -48,6 +49,7 @@ const forkSessionMock = vi.fn()
 const ensureSessionMock = vi.fn()
 
 const activeSessionIdRef = ref('session-1')
+const activeCardIdRef = ref('card-1')
 const activeCardRef = ref<unknown>(undefined)
 const streamingMessageRef = ref<{ role: string; content: string; slices: unknown[]; tool_results: unknown[] }>({
   role: 'assistant',
@@ -141,6 +143,7 @@ vi.mock('./modules/consciousness', () => ({
 
 vi.mock('./modules/airi-card', () => ({
   useAiriCardStore: () => ({
+    activeCardId: activeCardIdRef,
     activeCard: activeCardRef.value,
   }),
 }))
@@ -172,6 +175,7 @@ describe('chat orchestrator contract', () => {
     ioTracerMocks.spans.length = 0
     ioTracerMocks.startSpanMock.mockClear()
     activeSessionIdRef.value = 'session-1'
+    activeCardIdRef.value = 'card-1'
     activeCardRef.value = undefined
     streamingMessageRef.value = { role: 'assistant', content: '', slices: [], tool_results: [] }
     currentGeneration = 1
@@ -340,6 +344,46 @@ describe('chat orchestrator contract', () => {
         : (systemContent as { text: string }[]).map((p) => p.text).join('')
     expect(systemText).toContain('Plugin toolset guidance.')
     expect(systemText).toContain('Pattern words:')
+  })
+
+  it('resets pattern disruptor state when the active session or card changes', async () => {
+    useChatOrchestratorStore()
+    const patternDisruptorStore = usePatternDisruptorStore()
+    const prepareTurn = () => {
+      patternDisruptorStore.prepareForUserTurn({
+        settings: {
+          enabled: true,
+          randomWords: {
+            enabled: true,
+            wordCount: 1,
+            customPrompt: 'Pattern words: {{ words }}',
+          },
+          synonyms: { enabled: false },
+        },
+        messageText: 'the garden feels quiet tonight',
+        sessionMessages: [],
+      })
+    }
+
+    prepareTurn()
+    expect(patternDisruptorStore.activePromptSupplement).toContain('Pattern words:')
+    expect(patternDisruptorStore.wordHistory).toHaveLength(1)
+
+    activeSessionIdRef.value = 'session-2'
+    await nextTick()
+
+    expect(patternDisruptorStore.activePromptSupplement).toBe('')
+    expect(patternDisruptorStore.wordHistory).toEqual([])
+
+    prepareTurn()
+    expect(patternDisruptorStore.activePromptSupplement).toContain('Pattern words:')
+    expect(patternDisruptorStore.wordHistory).toHaveLength(1)
+
+    activeCardIdRef.value = 'card-2'
+    await nextTick()
+
+    expect(patternDisruptorStore.activePromptSupplement).toBe('')
+    expect(patternDisruptorStore.wordHistory).toEqual([])
   })
 
   it('emits special tokens for speech timeline handling during chat streaming', async () => {
